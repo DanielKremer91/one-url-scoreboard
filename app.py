@@ -12,6 +12,44 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
+# 1) Seite breit + Sidebar standardmäßig ausgeklappt
+st.set_page_config(
+    page_title="ONE URL Scoreboard",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+# 2) CSS: Haupt-Container auf volle Breite ziehen, Padding schlank,
+#    Sidebar etwas schmaler (optional) – funktioniert in aktuellen Streamlit-Versionen
+st.markdown("""
+<style>
+/* Haupt-Block-Container maximal breit machen */
+.main .block-container {
+  max-width: 100% !important;   /* volle Breite */
+  padding-left: 1rem !important;
+  padding-right: 1rem !important;
+  padding-top: 1rem !important;
+  padding-bottom: 2rem !important;
+}
+
+/* (Optional) Sidebar etwas schlanker, damit noch mehr Platz für Content bleibt */
+[data-testid="stSidebar"] {
+  min-width: 260px !important;
+  max-width: 260px !important;
+}
+
+/* (Kompatibilität mit älteren Streamlit-Versionen – alter Selektor) */
+.reportview-container .main .block-container {
+  max-width: 100% !important;
+  padding-left: 1rem !important;
+  padding-right: 1rem !important;
+  padding-top: 1rem !important;
+  padding-bottom: 2rem !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
+
 # =============================
 # Branding
 # =============================
