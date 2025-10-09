@@ -55,6 +55,23 @@ Fehlende Daten im **aktiven** Kriterium ⇒ Score = 0 (kein Reweighting pro URL)
 - **Kein globaler Prioritätsfaktor**. **Strategische Priorität** per URL bleibt optional.
 """)
 
+# ============= Cache leeren Button (gegen stale Session-State) =============
+def _reset_all_state():
+    for k in [
+        "uploads","column_maps","schema_index",
+        "llm_bot_detected","llm_bot_include","llm_bot_exclude",
+        "llm_bot_custom_include","llm_bot_custom_exclude",
+        "llm_crawl_mode","llm_bot_column_choices",
+        "offtopic_tau"
+    ]:
+        if k in st.session_state:
+            del st.session_state[k]
+
+with st.sidebar:
+    if st.button("🧹 Cache leeren (Uploads & Mappings)"):
+        _reset_all_state()
+        st.experimental_rerun()
+
 # ============= Session & Helpers =============
 if "uploads" not in st.session_state:
     st.session_state.uploads = {}  # key -> (df, name)
@@ -72,12 +89,12 @@ if "llm_bot_custom_include" not in st.session_state:
     st.session_state.llm_bot_custom_include = ""
 if "llm_bot_custom_exclude" not in st.session_state:
     st.session_state.llm_bot_custom_exclude = ""
+st.session_state.setdefault("llm_crawl_mode", None)
+st.session_state.setdefault("llm_bot_column_choices", [])
 
 ALIASES = {
     # URL-Aliase erweitert: erkennt u. a. Page URL / Address
-    "url": [
-        "url","page","page_url","seite","address","adresse","target","ziel","ziel_url","landing_page"
-    ],
+    "url": ["url","page","page_url","seite","address","adresse","target","ziel","ziel_url","landing_page"],
     "clicks": ["clicks","klicks","traffic","besuche","sc_clicks"],
     "impressions": ["impressions","impr","impressionen","search_impressions"],
     "position": ["position","avg_position","ranking","ranking_position","average_position","durchschnittliche_position","durchschn._position","rank","avg_rank"],
@@ -107,21 +124,19 @@ TRACKING_PARAMS_PREFIXES = ["utm_", "icid_"]
 TRACKING_PARAMS_EXACT = {"gclid","fbclid","msclkid","mc_eid","yclid"}
 
 # ---- AI/LLM Bot Muster (inkludieren / exkludieren) ----
-EXCLUDE_CLASSIC_BOTS = [
-    "googlebot", "googlebot smartphone", "bingbot", "yandex", "baidu"
-]
+EXCLUDE_CLASSIC_BOTS = ["googlebot", "googlebot smartphone", "bingbot", "yandex", "baidu"]
 INCLUDE_AI_BOTS = [
     "gptbot", "openai", "anthropic", "claudebot", "perplexitybot",
     "perplexity", "cohere", "ccbot", "bytespider", "google-extended",
-    "meta-ai", "facebook ai", "chatgpt", "duckassist", "quorabots", "youbot"
+    "meta-ai", "facebook ai", "chatgpt", "duckassist", "quorabots", "youbot", "kagi"
 ]
 GENERIC_BOT_TOKENS = [
     "bot", "ai", "gpt", "claude", "perplexity", "cohere", "bytespider", "ccbot",
-    "facebook ai", "google-extended", "openai", "anthropic", "metabot", "meta-ai", "youbot", "duckassist"
+    "facebook ai", "google-extended", "openai", "anthropic", "metabot", "meta-ai", "youbot", "duckassist","oai","oai-searchbot"
 ]
 
 def normalize_header(col: str) -> str:
-    c = col.strip().lower()
+    c = str(col).strip().lower()
     c = re.sub(r"[^\w]+", "_", c)
     c = re.sub(r"_+", "_", c).strip("_")
     return c
@@ -280,7 +295,7 @@ def ensure_url_column(df: pd.DataFrame, url_col: str) -> pd.DataFrame:
     df[url_col] = df[url_col].map(normalize_url)
     return df[df[url_col].notna()]
 
-# ---------- Schema-Index Cache ----------
+# ---------- Schema-Index Cache (immer frisch aufgebaut) ----------
 def build_schema_index():
     idx = {}
     for key, (df, name) in st.session_state.uploads.items():
@@ -415,14 +430,14 @@ CRITERIA_GROUPS = {
          "URL + Hauptkeyword + monatliches Suchvolumen des Hauptkeywords. Je höher, desto besser."),
         ("main_kw_exp", "Hauptkeyword-Potenzial (Expected Clicks)",
          "Entweder fertiger Wert **expected_clicks** ODER Berechnung aus (Suchvolumen × CTR(Position)). Je mehr, desto besser."),
+        ("llm_ref", "LLM-Popularität (Referrals)",
+         "AI/LLM-generierte Referrals/Sessions. Je höher, desto besser."),
     ],
     "Popularität & Autorität": [
         ("ext_pop", "URL-Popularität extern",
          "Backlinks & Referring Domains: 70% Ref. Domains + 30% Backlinks. Je höher, desto besser."),
         ("int_pop", "URL-Popularität intern",
          "Eindeutige interne Inlinks pro URL, entweder direkt `unique_inlinks` oder aus Kantenliste aggregiert."),
-        ("llm_ref", "LLM-Popularität (Referrals)",
-         "AI/LLM-generierte Referrals/Sessions. Je höher, desto besser."),
         ("llm_crawl", "LLM-Crawl-Frequenz",
          "Besuche durch AI/LLM-Crawler. Klassische Bots (Googlebot, Bingbot, Yandex, Baidu) sind exkludiert."),
     ],
@@ -491,10 +506,6 @@ if active.get("llm_crawl"):
     st.markdown("- **Variante B (Logfile):** `URL`, `user_agent` (+ optional `sessions/visits/hits/requests`). Klassische Bots (Googlebot, Bingbot, Yandex, Baidu) sind exkludiert.")
     store_upload("llmcrawl", st.file_uploader("LLM-Crawl (CSV/XLSX)", type=["csv", "xlsx"], key="upl_llmcrawl"))
 
-    # State für Modus & Auswahl initialisieren
-    st.session_state.setdefault("llm_crawl_mode", None)
-    st.session_state.setdefault("llm_bot_column_choices", [])
-
     if "llmcrawl" in st.session_state.uploads:
         df_llm, _ = st.session_state.uploads["llmcrawl"]
         cols = list(df_llm.columns)
@@ -509,12 +520,13 @@ if active.get("llm_crawl"):
             st.error("Konnte keine URL-Spalte erkennen. Bitte prüfe die Datei (Header `URL`).")
         else:
             if mode == "aggregated":
-                # Spalten-Kandidaten ermitteln: numerisch, keine klassischen Summen-/Meta-/Bot-Gesamtspalten
-                classic_bot_cols = {
-                    "googlebot", "googlebot_smartphone", "bingbot", "yandex", "baidu",
+                # Spalten-Kandidaten ermitteln: numerisch, keine klassischen Summen-/Meta-/irrelevanten Spalten
+                classic_bot_cols = {"googlebot","googlebot_smartphone","bingbot","yandex","baidu"}
+                ignore_cols_exact = {
+                    "alle_bots","gesamt","total","summe","sum","events","anzahl_ereignisse",
+                    "ref_domains","referring_domains","backlinks","links_to_target"
                 }
-                ignore_cols_exact = {"alle_bots", "gesamt", "total", "summe", "sum", "events", "anzahl_ereignisse"}
-                ignore_like_tokens = {"co2", "antwortzeit", "response", "ms"}
+                ignore_like_tokens = {"co2","antwortzeit","response","ms"}
 
                 def is_numeric_series(s: pd.Series) -> bool:
                     try:
@@ -534,20 +546,18 @@ if active.get("llm_crawl"):
                         continue
                     if cl in classic_bot_cols:
                         continue
-                    # nur numerische Spalten zulassen
-                    if is_numeric_series(df_llm[c]):
+                    if is_numeric_series(df_llm[c]):  # nur numerische Spalten zulassen
                         cand_cols.append(c)
 
                 # sinnvolle Default-Auswahl: Spalten, die wie AI/LLM-Botnamen aussehen
                 ai_pref_tokens = [
-                    "gpt", "openai", "oai", "oai-searchbot", "claude", "anthropic",
-                    "perplexity", "perplexitybot", "bytespider", "ccbot", "cohere",
-                    "meta-ai", "facebook", "youbot", "duckassist", "kagi"
+                    "gpt","openai","oai","oai-searchbot","claude","anthropic",
+                    "perplexity","perplexitybot","bytespider","ccbot","cohere",
+                    "meta-ai","facebook","youbot","duckassist","kagi"
                 ]
                 default_ai = [c for c in cand_cols if any(tok in c.lower() for tok in ai_pref_tokens)]
 
-                st.info("Wähle, **welche Bot-Spalten** in die Berechnung einfließen sollen. "
-                        "Klassische Bots (Googlebot, Bingbot, Yandex, Baidu) werden ignoriert.")
+                st.info("Wähle, **welche Bot-Spalten** in die Berechnung einfließen sollen. Klassische Bots (Googlebot, Bingbot, Yandex, Baidu) werden ignoriert.")
                 st.session_state["llm_bot_column_choices"] = st.multiselect(
                     "Bot-Spalten auswählen",
                     options=cand_cols,
@@ -557,22 +567,84 @@ if active.get("llm_crawl"):
 
                 # kleine Vorschau
                 if st.session_state["llm_bot_column_choices"]:
-                    tmp = df_llm.copy()
-                    tmp = ensure_url_column(tmp, url_col)
+                    tmp = ensure_url_column(df_llm.copy(), url_col)
                     for c in st.session_state["llm_bot_column_choices"]:
                         tmp[c] = pd.to_numeric(tmp[c], errors="coerce").fillna(0)
                     tmp["_llm_sum_preview"] = tmp[st.session_state["llm_bot_column_choices"]].sum(axis=1)
-                    prev = tmp[[url_col, "_llm_sum_preview"]].groupby(url_col, as_index=False)["_llm_sum_preview"].sum().rename(
-                        columns={url_col: "URL", "_llm_sum_preview": "LLM-Crawls (Auswahl)"}
+                    prev = (
+                        tmp[[url_col, "_llm_sum_preview"]]
+                        .groupby(url_col, as_index=False)["_llm_sum_preview"]
+                        .sum()
+                        .rename(columns={url_col: "URL", "_llm_sum_preview": "LLM-Crawls (Auswahl)"})
                     )
                     st.dataframe(prev.head(10), use_container_width=True)
                 else:
                     st.warning("Keine Bot-Spalten ausgewählt. Es werden 0 Besuche gezählt.")
 
             else:
-                st.info("Logfile erkannt: Bitte unten die Bots wählen (User-Agent enthält …). "
-                        "Klassische Crawler (Googlebot, Bingbot, Yandex, Baidu) werden ausgeschlossen.")
+                # Logfile-UI: erkannte Bots vorschlagen + Include/Exclude + Freitext
+                uas = df_llm[ua_col].astype(str).fillna("")
+                bot_counts: Dict[str, int] = {}
 
+                def label_for_ua(s: str) -> Optional[str]:
+                    s_l = s.lower()
+                    for token in EXCLUDE_CLASSIC_BOTS:
+                        if token in s_l: return token
+                    for token in INCLUDE_AI_BOTS:
+                        if token in s_l: return token
+                    for token in GENERIC_BOT_TOKENS:
+                        if token in s_l: return token
+                    return None
+
+                for ua in uas:
+                    lab = label_for_ua(ua)
+                    if lab:
+                        bot_counts[lab] = bot_counts.get(lab, 0) + 1
+
+                st.session_state.llm_bot_detected = bot_counts
+
+                if bot_counts:
+                    st.markdown("##### Erkannte Bots (aus User-Agent):")
+                    detected_ai = [b for b in bot_counts if b in INCLUDE_AI_BOTS]
+                    detected_classic = [b for b in bot_counts if b in EXCLUDE_CLASSIC_BOTS]
+                    other_bots = [b for b in bot_counts if b not in detected_ai + detected_classic]
+
+                    cols3 = st.columns(3)
+                    with cols3[0]:
+                        st.write("**AI/LLM (empfohlen einschließen)**")
+                        st.write(", ".join(f"{b} ({bot_counts[b]})" for b in detected_ai) or "—")
+                    with cols3[1]:
+                        st.write("**Klassisch (empfohlen ausschließen)**")
+                        st.write(", ".join(f"{b} ({bot_counts[b]})" for b in detected_classic) or "—")
+                    with cols3[2]:
+                        st.write("**Weitere Kandidaten**")
+                        st.write(", ".join(f"{b} ({bot_counts[b]})" for b in other_bots) or "—")
+
+                    all_bots_sorted = sorted(bot_counts.keys(), key=lambda x: (-bot_counts[x], x))
+                    st.info("Wähle unten, **welche Bots zählen sollen** (einschließen) und **welche ausgeschlossen werden**. Freitext erlaubt (kommagetrennt).")
+
+                    st.session_state.llm_bot_include = st.multiselect(
+                        "Bots einschließen (werden gezählt)",
+                        options=all_bots_sorted,
+                        default=[b for b in detected_ai if b in all_bots_sorted],
+                        help="Nur User-Agents, die einen dieser Begriffe enthalten (Case-insensitive), werden gezählt."
+                    )
+                    st.session_state.llm_bot_exclude = st.multiselect(
+                        "Bots ausschließen (werden ignoriert)",
+                        options=all_bots_sorted,
+                        default=[b for b in detected_classic if b in all_bots_sorted],
+                        help="User-Agents, die einen dieser Begriffe enthalten (Case-insensitive), werden ausgeschlossen."
+                    )
+                    st.session_state.llm_bot_custom_include = st.text_input(
+                        "Freie Muster zum Einschließen (kommagetrennt)", value="",
+                        help="Zusätzliche Suchbegriffe, die im User-Agent enthalten sein müssen (ODER-Bedingung)."
+                    )
+                    st.session_state.llm_bot_custom_exclude = st.text_input(
+                        "Freie Muster zum Ausschließen (kommagetrennt)", value="",
+                        help="Zusätzliche Suchbegriffe, die im User-Agent ausgeschlossen werden sollen (ODER-Bedingung)."
+                    )
+                else:
+                    st.warning("Keine erkennbaren Bot-Muster in den User-Agents gefunden. Du kannst unten Freitext-Muster verwenden.")
 
 # Embeddings
 if active.get("offtopic"):
@@ -851,7 +923,7 @@ def _contains_any(s: str, needles: List[str]) -> bool:
 if active.get("llm_crawl"):
     found = None
 
-    # Aggregiertes Format (mehrere Bot-Spalten, z. B. GPTBot / ClaudeBot / PerplexityBot / OAI-SearchBot …)
+    # Aggregiertes Format (mehrere Bot-Spalten)
     if "llmcrawl" in st.session_state.uploads and st.session_state.get("llm_crawl_mode") == "aggregated":
         df_aggr, _ = st.session_state.uploads["llmcrawl"]
         urlc = find_first_alias(df_aggr, "url")
@@ -886,13 +958,6 @@ if active.get("llm_crawl"):
                 custom_inc = [s.strip() for s in (st.session_state.llm_bot_custom_include or "").split(",") if s.strip()]
                 custom_exc = [s.strip() for s in (st.session_state.llm_bot_custom_exclude or "").split(",") if s.strip()]
 
-                INCLUDE_AI_BOTS = [
-                    "gptbot", "openai", "oai", "oai-searchbot", "anthropic", "claude",
-                    "perplexity", "perplexitybot", "cohere", "ccbot", "bytespider",
-                    "meta-ai", "facebook ai", "youbot", "duckassist", "kagi"
-                ]
-                EXCLUDE_CLASSIC_BOTS = ["googlebot", "googlebot smartphone", "bingbot", "yandex", "baidu"]
-
                 include_needles = include_from_ui + custom_inc
                 if not include_needles:
                     include_needles = INCLUDE_AI_BOTS[:]
@@ -921,7 +986,6 @@ if active.get("llm_crawl"):
         debug_cols["llm_crawl"] = {"llm_crawl_freq_raw": pd.to_numeric(d[cm["llm_crawl_freq"]], errors="coerce")}
     elif master_urls is not None:
         results["llm_crawl"] = pd.Series(0.0, index=master_urls.index)
-
 
 # --- Offtopic (0/1) — robust gegen fehlende/uneinheitliche Embeddings ---
 if active.get("offtopic"):
@@ -1033,7 +1097,6 @@ if active.get("priority"):
             .fillna(1.0)
             .clip(lower=1.0)  # alles unter 1.0 wird auf 1.0 gesetzt
         )
-      
     elif master_urls is not None:
         priority_url = pd.Series(1.0, index=master_urls.index)
 
@@ -1132,7 +1195,6 @@ if master_urls is not None and weight_keys:
 
     # Strategische Priorität (per-URL) — optional
     if active.get("priority"):
-        # priority_url wurde oben gesetzt, wenn Datei vorhanden war – sonst 1.0
         if 'priority_url' in locals() and priority_url is not None:
             df_out["priority_factor_url"] = priority_url.values
         else:
@@ -1183,7 +1245,7 @@ if master_urls is not None and weight_keys:
             "custom_include": st.session_state.llm_bot_custom_include,
             "custom_exclude": st.session_state.llm_bot_custom_exclude,
         },
-        "notes": "Masterliste: Union / Eigene / Merge(1-2) / Eine Datei / Schnittmenge. All-Inlinks in Union enthalten. SC Query→URL aggregiert. Embeddings robust. CSV-Repair aktiv (1-Spalten-Files). LLM-Crawl: wahlweise manuelle Bot-Auswahl oder Heuristik. main_kw_exp kann direkt oder via SV×CTR berechnet werden.",
+        "notes": "Masterliste: Union / Eigene / Merge(1-2) / Eine Datei / Schnittmenge. All-Inlinks in Union enthalten. SC Query→URL aggregiert. Embeddings robust. CSV-Repair aktiv (1-Spalten-Files). LLM-Crawl: Aggregat (Spaltenauswahl) oder Logfile (UA-Filter). main_kw_exp direkt oder via SV×CTR.",
     }
     st.download_button("⬇️ Config (JSON)",
         data=json.dumps(config, indent=2).encode("utf-8"),
