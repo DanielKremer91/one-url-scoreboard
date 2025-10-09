@@ -589,8 +589,15 @@ build_schema_index()
 
 # ============= Master URL list builder =============
 st.subheader("Master-URL-Liste")
-st.markdown("Wähle, wie die Masterliste gebildet wird. **Union** ist Standard. Die Master-URL-Liste ist die zentrale Ausgangsliste aller URLs, die das Scoreboard überhaupt bewertet.
-Alle Kriterien (Clicks, Backlinks, Umsatz, etc.) werden an diese Liste joined. Nur URLs, die in der Masterliste stehen, erhalten am Ende einen Score und erscheinen im Ergebnis/Export")
+st.markdown(
+    """
+Wähle, wie die Masterliste gebildet wird. **Union** ist Standard.
+
+Die **Master-URL-Liste** ist die zentrale Ausgangsliste aller URLs, die das Scoreboard überhaupt bewertet.  
+Alle Kriterien (Clicks, Backlinks, Umsatz, etc.) werden **an diese Liste joined**.  
+Nur URLs, die in der Masterliste stehen, erhalten am Ende einen Score und erscheinen im Ergebnis/Export.
+"""
+)
 
 master_mode = st.radio(
     "Masterlisten-Modus",
