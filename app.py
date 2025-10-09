@@ -78,13 +78,13 @@ ALIASES = {
     "url": [
         "url","page","page_url","seite","address","adresse","target","ziel","ziel_url","landing_page"
     ],
-    "clicks": ["clicks","klicks","sc_clicks"],
+    "clicks": ["clicks","klicks","traffic","besuche","sc_clicks"],
     "impressions": ["impressions","impr","impressionen","search_impressions"],
-    "position": ["position","avg_position","average_position","durchschnittliche_position","durchschn._position","rank","avg_rank"],
-    "search_volume": ["search_volume","sv","volume","suchvolumen"],
+    "position": ["position","avg_position","ranking","ranking_position","average_position","durchschnittliche_position","durchschn._position","rank","avg_rank"],
+    "search_volume": ["search_volume","sv","volume","suchvolumen","sv_monat"],
     "cpc": ["cpc","cost_per_click"],
-    "traffic_value": ["traffic_value","otv","organic_traffic_value","value","potential_value"],
-    "potential_traffic_url": ["potential_traffic_url","potential_traffic","pot_traffic"],
+    "traffic_value": ["traffic_value","otv","organic_traffic_value","value","potential_value","trafficwert","traffic_wert"],
+    "potential_traffic_url": ["potential_traffic_url","potential_traffic","pot_traffic","potentielle_klicks","erwartete_klicks","erwarteter_traffic","estimated_traffic","estimated_clicks"],
     # extern
     "backlinks": ["backlinks","links_total","bl","inbound_links","links_to_target"],
     "ref_domains": ["ref_domains","referring_domains","rd","domains_ref","verweisende_domains","referring_domains"],
@@ -96,7 +96,7 @@ ALIASES = {
     "user_agent": ["user_agent","ua","agent","crawler","bot","useragent"],
     "embedding": ["embedding","embeddings","vector","vec","embedding_json"],
     "revenue": ["revenue","umsatz","organic_revenue","organic_umsatz","organic_sales"],
-    "priority_factor": ["priority_factor","prio","priority","override","weight_override"],
+    "priority_factor": ["priority_factor","prio","priority","priorität","gewicht","gewichtung","boost","override","weight_override","wichtigkeit","boost_faktor","faktor","manual_weight"],
     "keyword": ["keyword","query","suchbegriff","suchanfrage"],
     # Hauptkeyword-Potenzial
     "main_keyword": ["main_keyword","hauptkeyword","primary_keyword","focus_keyword","focus_kw","haupt_kw","haupt-keyword"],
