@@ -1,7 +1,7 @@
 # app.py
 # ONE URL Scoreboard — Streamlit App
-# Author idea: Daniel Kremer (ONE Beyond Search) — implementation by ChatGPT
-# Version: Union/Intersection Masterlist modes + include All-Inlinks in union + Page URL alias + robust compound column split
+# Idea: Daniel Kremer (ONE Beyond Search) — Implementation by ChatGPT
+# Version: Intersect mode + All-inlinks included + Address/Page URL aliases + CSV split fallback + inline upload hints + no global priority factor
 
 import io
 import json
@@ -42,16 +42,16 @@ st.markdown("""
 # ============= Hilfe =============
 with st.expander("❓ Hilfe / Tool-Dokumentation", expanded=False):
     st.markdown("""
-**ONE URL Scoreboard** priorisiert URLs anhand wählbarer Kriterien nach globalem Scoring-Modus (*Rank linear* oder *Perzentil-Buckets*).  
+**ONE URL Scoreboard** priorisiert URLs über wählbare Kriterien (globaler Scoring-Modus: *Rank linear* oder *Perzentil-Buckets*).  
 Fehlende Daten im **aktiven** Kriterium ⇒ Score = 0 (kein Reweighting pro URL).
 
-**Neu / wichtig**
-- **Master-URL-Liste**: Modi **Union (Voreinstellung)**, **Gemeinsamer Nenner (Schnittmenge)** oder **Aus zwei Quellen**.
-- **All-Inlinks-Datei** ist jetzt **in der Union enthalten** (wir verwenden die empfangenden Ziel-URLs).
-- **Cross-File-Fallback** (Schema-Index): Wenn die „vorgesehene“ Datei/Spalte fehlt, sucht das Tool in anderen Uploads passende Spalten (per Alias).
-- **SC-Aggregation**: Query-Level-SC-Dateien werden automatisch auf URL-Ebene aggregiert (Clicks/Impressions summiert).
-- **Embeddings robust**: Fehlende Embeddings ⇒ Outlier (unter τ). Uneinheitliche Vektorlängen ⇒ Padding/Trunc auf dominante Dimension.
-- **Compound-Spalten** (z. B. *URL;RD;BL*) werden automatisch in `url`, `ref_domains`, `backlinks` gesplittet.
+**Wichtig**
+- **Master-URL-Liste**: Modi **Union** (Voreinstellung), **Gemeinsamer Nenner (Schnittmenge)**, **aus zwei Quellen**; eigene Liste möglich.
+- **All-Inlinks-Datei** (Crawl) wird **in die Union aufgenommen** (empfangende Ziel-URLs).
+- **SC-Query-Level** wird **automatisch** pro URL aggregiert.
+- **Embeddings robust**: Fehlende Embeddings ⇒ Outlier (unter τ). Uneinheitliche Längen ⇒ Padding/Trunc auf dominante Dimension.
+- **CSV-Fallback**: Falls eine Spalte „URL;RD;BL“ vorkommt, wird sie automatisch in `url`, `ref_domains`, `backlinks` gesplittet.
+- **Kein globaler Prioritätsfaktor** (kein Mehrwert). **Strategische Priorität** pro URL bleibt optional.
 """)
 
 # ============= Session & Helpers =============
@@ -63,7 +63,7 @@ if "schema_index" not in st.session_state:
     st.session_state.schema_index = {}
 
 ALIASES = {
-    # URL: erweitert um "page_url"
+    # URL-Aliase erweitert: erkennt u. a. Page URL / Address
     "url": [
         "url","page","page_url","seite","address","adresse","target","ziel","ziel_url","landing_page"
     ],
@@ -76,7 +76,7 @@ ALIASES = {
     "potential_traffic_url": ["potential_traffic_url","potential_traffic","pot_traffic"],
     "backlinks": ["backlinks","links_total","bl","inbound_links"],
     "ref_domains": ["ref_domains","referring_domains","rd","domains_ref","verweisende_domains"],
-    "unique_inlinks": ["unique_inlinks","internal_inlinks","inlinks_unique","eingehenden_links","inlinks","eingehende_links","eingehenden_link"],
+    "unique_inlinks": ["unique_inlinks","internal_inlinks","inlinks_unique","eingehenden_links","inlinks","eingehende_links","inlinks_unique_count","incoming_links_unique"],
     "llm_ref_traffic": ["llm_ref_traffic","llm_referrals","ai_referrals","llm_popularity","llm_traffic"],
     "llm_crawl_freq": ["llm_crawl_freq","ai_crawls","llm_crawls","llm_crawler_visits"],
     "embedding": ["embedding","embeddings","vector","vec","embedding_json"],
@@ -134,42 +134,33 @@ def read_table(uploaded) -> pd.DataFrame:
         df = pd.read_excel(io.BytesIO(data))
     return normalize_headers(df)
 
-# ---- Compound-Spalten automatisch splitten (URL;RD;BL) ----
+# ---- CSV-Compound-Fallback ("URL;RD;BL") — nur wenn keine URL-Spalte erkannt wird ----
 def try_split_compound_url_metrics(df: pd.DataFrame) -> pd.DataFrame:
-    # Wenn schon eine URL-Spalte existiert, nichts tun
+    # Wenn es bereits eine URL-Spalte (Alias) gibt, nichts tun
     url_aliases = set(ALIASES["url"])
     if any(c in df.columns for c in url_aliases):
         return df
-
-    # Kandidaten (z. B. "page_url_referring_domains_links_to_target") oder 1-Spalten-CSV
+    # Prüf-Kandidat: 1-Spalten-CSV oder Spalte mit "url" & ("ref" oder "link")
     cand_cols = [c for c in df.columns if ("url" in c and ("ref" in c or "link" in c))]
-    if len(df.columns) == 1:  # 1-Spalten-Datei → diese Spalte testen
+    if len(df.columns) == 1:
         cand_cols = [df.columns[0]]
-
     if not cand_cols:
         return df
-
     col = cand_cols[0]
     s = df[col].astype(str)
     if not s.str.contains(";").any():
         return df
-
     parts = s.str.split(";", n=2, expand=True)
-    if parts.shape[1] < 1:
-        return df
-
     df2 = df.copy()
     df2["url"] = parts[0].astype(str)
-    if parts.shape[1] >= 2:
-        df2["ref_domains"] = pd.to_numeric(parts[1], errors="coerce")
-    if parts.shape[1] >= 3:
-        df2["backlinks"] = pd.to_numeric(parts[2], errors="coerce")
+    if parts.shape[1] >= 2: df2["ref_domains"] = pd.to_numeric(parts[1], errors="coerce")
+    if parts.shape[1] >= 3: df2["backlinks"] = pd.to_numeric(parts[2], errors="coerce")
     return df2
 
 def store_upload(key: str, file):
     if file is None: return
     df = read_table(file)
-    df = try_split_compound_url_metrics(df)  # robust: spaltet ggf. URL;RD;BL auf
+    df = try_split_compound_url_metrics(df)  # CSV-Fallback, falls keine URL-Spalte existiert
     st.session_state.uploads[key] = (df, file.name)
 
 def find_first_alias(df: pd.DataFrame, target: str) -> Optional[str]:
@@ -180,6 +171,12 @@ def find_first_alias(df: pd.DataFrame, target: str) -> Optional[str]:
     for c in candidates:
         cn = re.sub(r"[_\s]+","", c)
         if cn in cols_norm: return cols_norm[cn]
+    # Heuristik NUR für URL: erkenne Spalten wie "address_*" oder "page_url*"
+    if target == "url":
+        for col in df.columns:
+            cl = col.lower()
+            if cl == "address" or cl.startswith("address_") or cl.startswith("page_url"):
+                return col
     return None
 
 def require_columns_ui(key: str, df: pd.DataFrame, targets: List[str], label: str) -> Dict[str, str]:
@@ -317,16 +314,6 @@ with st.sidebar.expander("Bucket-Setup (Info)", expanded=False):
         "Die Buckets ordnen Werte entsprechend ihrer Verteilung ein (robust bei Ausreißern)."
     )
 
-offtopic_tau = st.sidebar.slider(
-    "Offtopic-Threshold τ (Ähnlichkeit)",
-    0.0, 1.0, 0.5, 0.01,
-    help="Binäres Gate im Offtopic-Kriterium: Cosine-Similarity ≥ τ ⇒ 1.0, sonst 0.0. Fehlende Embeddings zählen als < τ."
-)
-priority_global = st.sidebar.slider(
-    "Globaler Prioritäts-Faktor",
-    0.5, 2.0, 1.0, 0.05,
-    help="Skaliert den finalen Score aller URLs global (z. B. 1.2 = +20 %). In Kombination mit per-URL-Overrides nutzbar."
-)
 use_autodiscovery = st.sidebar.toggle(
     "Autodiscovery über alle Uploads",
     value=True,
@@ -339,13 +326,13 @@ CRITERIA = [
     ("sc_impr",   "SC Impressions", "Search Console Impressions."),
     ("otv",       "Organic Traffic Value", "URL-Value vorhanden ODER via Keyword × CTR."),
     ("ext_pop",   "URL-Popularität extern", "Ref. Domains 70% + Backlinks 30%."),
-    ("int_pop",   "URL-Popularität intern", "Unique interne Inlinks."),
+    ("int_pop",   "URL-Popularität intern", "Unique interne Inlinks (oder Kantenliste)."),
     ("llm_ref",   "LLM-Popularität (Referrals)", "LLM/AI Referral Traffic."),
     ("llm_crawl", "LLM-Crawl-Frequenz", "AI/LLM Crawler Visits."),
     ("offtopic",  "Offtopic-Score (0/1)", "Cosine-Similarity Gate via τ."),
     ("revenue",   "Umsatz", "Revenue je URL."),
     ("seo_eff",   "URL-SEO-Effizienz", "Anteil Top-5-Keywords je URL."),
-    ("priority",  "Strategische Priorität (Override)", "Multiplikator je URL + global."),
+    ("priority",  "Strategische Priorität (Override)", "Multiplikator je URL."),
     ("main_kw",   "Hauptkeyword-Potenzial (SV/Expected Clicks)", "URL + Hauptkeyword + erwartete Klicks ODER Suchvolumen."),
 ]
 
@@ -354,72 +341,70 @@ st.caption("Wähle unten die gewünschten Kriterien. Danach erscheinen die passe
 active = {code: st.checkbox(label, value=False, help=hover, key=f"chk_{code}") for code, label, hover in CRITERIA}
 
 # ============= Upload-Masken (nach Auswahl) =============
-uploads_needed_text: List[str] = []
-def need(s: str): uploads_needed_text.append(s)
-
-if active.get("sc_clicks") or active.get("sc_impr"): need("SC-Datei (URL, Clicks/Impressions; Query-Ebene ok)")
-if active.get("otv"): need("OTV-URL (optional), OTV-Keyword (optional), CTR-Kurve (optional)")
-if active.get("ext_pop"): need("Extern-Popularität (URL, backlinks, ref_domains)")
-if active.get("int_pop"): need("Intern-Popularität (URL, unique_inlinks ODER Kantenliste)")
-if active.get("llm_ref"): need("LLM Referral Traffic (URL, llm_ref_traffic)")
-if active.get("llm_crawl"): need("LLM Crawler Frequenz (URL, llm_crawl_freq)")
-if active.get("offtopic"): need("Embeddings (URL, embedding)")
-if active.get("revenue"): need("Umsatz (URL, revenue)")
-if active.get("seo_eff"): need("Keywords (keyword, url, position)")
-if active.get("priority"): need("Prioritäten-Mapping (URL, priority_factor) — optional")
-if active.get("main_kw"): need("Hauptkeyword (URL, main_keyword, expected_clicks ODER search_volume)")
-
 st.markdown("---")
-st.subheader("Basierend auf den gewählten Kriterien benötigen wir folgende Daten von dir")
-st.markdown("- " + "\n- ".join(dict.fromkeys(uploads_needed_text)) if uploads_needed_text else "Noch keine Kriterien gewählt.")
+st.subheader("Basierend auf den gewählten Kriterien benötigen wir folgende Dateien")
 
-# Upload-Inputs
+# SC
 if active.get("sc_clicks") or active.get("sc_impr"):
-    st.markdown("**Search Console Organic Performance**")
+    st.markdown("**Search Console Organic Performance — erwartet:** `URL` (alias: url/page/page_url/address), `Clicks/Klicks`, `Impressions/Impressionen`. **Query-Ebene ist ok** – wird pro URL aggregiert.")
     store_upload("sc", st.file_uploader("SC-Datei (CSV/XLSX)", type=["csv","xlsx"], key="upl_sc"))
 
+# OTV
 if active.get("otv"):
-    st.markdown("**Organic Traffic Value (OTV)**")
+    st.markdown("**Organic Traffic Value — erwartet:**")
+    st.markdown("- **Variante A (URL-Value):** `URL`, `traffic_value` **oder** `potential_traffic_url` (+ optional `cpc`).")
+    st.markdown("- **Variante B (Keyword-basiert):** `keyword`, `URL`, `position`, `search_volume` (+ optional `cpc`). CTR-Kurve optional (`position`, `ctr`).")
     c1, c2, c3 = st.columns(3)
     with c1: store_upload("otv_url", st.file_uploader("OTV: URL-Value (optional)", type=["csv","xlsx"], key="upl_otv_url"))
     with c2: store_upload("otv_kw",  st.file_uploader("OTV: Keyword-Datei (optional)", type=["csv","xlsx"], key="upl_otv_kw"))
     with c3: store_upload("ctr_curve", st.file_uploader("CTR-Kurve (optional)", type=["csv","xlsx"], key="upl_ctr"))
 
+# Extern-Pop
 if active.get("ext_pop"):
-    st.markdown("**URL-Popularität extern**")
-    store_upload("ext", st.file_uploader("Extern-Popularität", type=["csv","xlsx"], key="upl_ext"))
+    st.markdown("**Extern-Popularität — erwartet:** `URL`, `backlinks`, `ref_domains`.")
+    store_upload("ext", st.file_uploader("Extern-Popularität (CSV/XLSX)", type=["csv","xlsx"], key="upl_ext"))
 
+# Intern-Pop
 if active.get("int_pop"):
-    st.markdown("**URL-Popularität intern**")
+    st.markdown("**Intern-Popularität — erwartet:**")
+    st.markdown("- **Variante A:** `URL`, `unique_inlinks`.")
+    st.markdown("- **Variante B (Kantenliste):** `URL` (= Ziel) **und** eine Quellspalte (z. B. `source`, `source_url`, `referrer`) – wird zu `unique_inlinks` aggregiert.")
     store_upload("int", st.file_uploader("Intern-Popularität (Crawl/Inlinks)", type=["csv","xlsx"], key="upl_int"))
 
+# LLM Referral
 if active.get("llm_ref"):
-    st.markdown("**LLM Referral Traffic**")
-    store_upload("llmref", st.file_uploader("LLM-Referral", type=["csv","xlsx"], key="upl_llmref"))
+    st.markdown("**LLM Referral Traffic — erwartet:** `URL`, `llm_ref_traffic`.")
+    store_upload("llmref", st.file_uploader("LLM-Referral (CSV/XLSX)", type=["csv","xlsx"], key="upl_llmref"))
 
+# LLM Crawl
 if active.get("llm_crawl"):
-    st.markdown("**LLM-Crawl-Frequenz**")
-    store_upload("llmcrawl", st.file_uploader("LLM-Crawl", type=["csv","xlsx"], key="upl_llmcrawl"))
+    st.markdown("**LLM Crawler Frequenz — erwartet:** `URL`, `llm_crawl_freq`.")
+    store_upload("llmcrawl", st.file_uploader("LLM-Crawl (CSV/XLSX)", type=["csv","xlsx"], key="upl_llmcrawl"))
 
+# Embeddings
 if active.get("offtopic"):
-    st.markdown("**Offtopic (Embeddings)**")
-    store_upload("emb", st.file_uploader("Embeddings-Datei", type=["csv","xlsx"], key="upl_emb"))
+    st.markdown("**Embeddings — erwartet:** `URL` (alias inkl. `Address`), `embedding` (JSON-Liste oder Zahlen-Sequenz). Fehlende Embeddings ⇒ Outlier (< τ).")
+    store_upload("emb", st.file_uploader("Embeddings-Datei (CSV/XLSX)", type=["csv","xlsx"], key="upl_emb"))
 
+# Revenue
 if active.get("revenue"):
-    st.markdown("**Umsatz**")
-    store_upload("rev", st.file_uploader("Umsatz-Datei", type=["csv","xlsx"], key="upl_rev"))
+    st.markdown("**Umsatz — erwartet:** `URL`, `revenue`.")
+    store_upload("rev", st.file_uploader("Umsatz-Datei (CSV/XLSX)", type=["csv","xlsx"], key="upl_rev"))
 
+# SEO Efficiency
 if active.get("seo_eff"):
-    st.markdown("**SEO-Effizienz (Top-5-Anteil)**")
+    st.markdown("**SEO-Effizienz — erwartet:** `keyword`, `URL`, `position` (Top-5-Anteil je URL wird berechnet).")
     store_upload("eff_kw", st.file_uploader("Keyword-Datei (SEO-Effizienz)", type=["csv","xlsx"], key="upl_eff_kw"))
 
+# Priority
 if active.get("priority"):
-    st.markdown("**Strategische Priorität (optional)**")
+    st.markdown("**Strategische Priorität — erwartet (optional):** `URL`, `priority_factor` (0.5–2.0).")
     store_upload("prio", st.file_uploader("Priorität (optional)", type=["csv","xlsx"], key="upl_prio"))
 
+# Hauptkeyword
 if active.get("main_kw"):
-    st.markdown("**Hauptkeyword-Potenzial**")
-    store_upload("main_kw", st.file_uploader("Hauptkeyword-Mapping", type=["csv","xlsx"], key="upl_main_kw"))
+    st.markdown("**Hauptkeyword-Potenzial — erwartet:** `URL`, `main_keyword` **und** `expected_clicks` **oder** `search_volume`.")
+    store_upload("main_kw", st.file_uploader("Hauptkeyword-Mapping (CSV/XLSX)", type=["csv","xlsx"], key="upl_main_kw"))
 
 # ---------- (Re)build schema index after uploads changed ----------
 build_schema_index()
@@ -434,7 +419,7 @@ master_mode = st.radio(
     index=0,
     help=(
         "**Union:** Alle URLs aus allen Uploads (Duplikate entfernt). "
-        "**Schnittmenge:** Nur URLs, die in *allen* berücksichtigten Uploads vorkommen. "
+        "**Schnittmenge:** Nur URLs, die in *allen* Uploads vorkommen, die eine URL-Spalte besitzen. "
         "**Zwei Quellen:** Masterliste aus genau zwei gewählten Uploads."
     )
 )
@@ -457,27 +442,22 @@ def collect_urls_union(include_keys: Optional[List[str]] = None) -> Optional[pd.
     return None
 
 def collect_urls_intersection() -> Optional[pd.DataFrame]:
-    sets = []
-    sources = 0
+    url_sets = []
     for key, (df, _) in st.session_state.uploads.items():
         c = find_first_alias(df, "url")
         if not c:
             continue
         d = ensure_url_column(df[[c]], c)
         s = set(d[c].dropna().unique().tolist())
-        if len(s) == 0:
-            continue
-        sets.append(s)
-        sources += 1
-    if sources == 0:
+        if s:
+            url_sets.append(s)
+    if not url_sets:
         return None
-    inter = set.intersection(*sets) if len(sets) > 1 else sets[0]
-    if not inter:
-        return pd.DataFrame({"url_norm": []})
-    return pd.DataFrame({"url_norm": sorted(inter)})
+    inter = set.intersection(*url_sets)
+    return pd.DataFrame({"url_norm": sorted(inter)}) if inter else pd.DataFrame({"url_norm": []})
 
 if use_custom_master:
-    mf = st.file_uploader("Eigene Masterliste (Spalte: url/seite/page_url/...)", type=["csv","xlsx"], key="upl_master")
+    mf = st.file_uploader("Eigene Masterliste (Spalte: url/page/page_url/address/...)", type=["csv","xlsx"], key="upl_master")
     if mf:
         dfm = read_table(mf)
         dfm = try_split_compound_url_metrics(dfm)
@@ -489,7 +469,7 @@ else:
         master_urls = collect_urls_union()
     elif master_mode == "Gemeinsamer Nenner (Schnittmenge)":
         master_urls = collect_urls_intersection()
-    else:  # aus zwei Quellen
+    else:
         available = list(st.session_state.uploads.keys())
         pick1 = st.selectbox("Quelle 1", options=[None] + available, index=0, key="master_src1")
         pick2 = st.selectbox("Quelle 2 (optional)", options=[None] + available, index=0, key="master_src2")
@@ -524,8 +504,7 @@ if active.get("sc_clicks") or active.get("sc_impr"):
         metrics = []
         if active.get("sc_clicks"): metrics.append(colmap["clicks"])
         if active.get("sc_impr"):  metrics.append(colmap["impressions"])
-        for m in metrics:
-            df_sc[m] = pd.to_numeric(df_sc[m], errors="coerce").fillna(0)
+        for m in metrics: df_sc[m] = pd.to_numeric(df_sc[m], errors="coerce").fillna(0)
         agg_sc = df_sc.groupby(urlc, as_index=False)[metrics].sum()
         scj = join_on_master(agg_sc, urlc, metrics)
         if active.get("sc_clicks"):
@@ -596,7 +575,6 @@ if active.get("ext_pop"):
 if active.get("int_pop"):
     # Bevorzugt fertige Zählspalte; Fallback: Kantenliste (source -> url) → distinct Quellen zählen
     found = find_df_with_targets(["url","unique_inlinks"], prefer_keys=["int"], use_autodiscovery=use_autodiscovery)
-
     if not found:
         found_edges = find_df_with_targets(["url"], prefer_keys=["int"], use_autodiscovery=use_autodiscovery)
         if found_edges:
@@ -658,7 +636,7 @@ if active.get("offtopic"):
         urlc, ec = cm["url"], cm["embedding"]
 
         def parse_vec(x):
-            if isinstance(x, (list, tuple, np.ndarray)): 
+            if isinstance(x, (list, tuple, np.ndarray)):
                 try: return np.array(x, dtype=float)
                 except Exception: return None
             if isinstance(x, str):
@@ -667,10 +645,10 @@ if active.get("offtopic"):
                     try: return np.array(json.loads(xs), dtype=float)
                     except Exception: pass
                 parts = re.split(r"[,\s;|]+", xs.strip("[]() "))
-                try: 
+                try:
                     vals = [float(p) for p in parts if p!=""]
                     return np.array(vals, dtype=float) if len(vals)>0 else None
-                except Exception: 
+                except Exception:
                     return None
             return None
 
@@ -685,16 +663,11 @@ if active.get("offtopic"):
             dominant_len = Counter(lengths).most_common(1)[0][0]
 
             def pad_or_trunc(v: Optional[np.ndarray], L: int) -> Optional[np.ndarray]:
-                if v is None: 
-                    return None
+                if v is None: return None
                 n = len(v)
-                if n == L: 
-                    return v
-                if n > L:
-                    return v[:L]
-                vv = np.zeros(L, dtype=float)
-                vv[:n] = v
-                return vv
+                if n == L: return v
+                if n > L:  return v[:L]
+                vv = np.zeros(L, dtype=float); vv[:n] = v; return vv
 
             tmp["_vec2"] = tmp["_vec"].map(lambda v: pad_or_trunc(v, dominant_len))
             valid = tmp[tmp["_vec2"].map(lambda v: isinstance(v, np.ndarray))]
@@ -705,23 +678,35 @@ if active.get("offtopic"):
                 debug_cols["offtopic"] = {"similarity": pd.Series([np.nan]*len(master_urls))}
             else:
                 centroid = mat.mean(axis=0)
-
                 def cos_sim(vec):
                     a = vec/(np.linalg.norm(vec)+1e-12); b = centroid/(np.linalg.norm(centroid)+1e-12)
                     return float(np.dot(a,b))
-
                 valid["_sim"] = valid["_vec2"].map(cos_sim)
-
                 d = master_urls.merge(valid[[urlc,"_sim"]], left_on="url_norm", right_on=urlc, how="left")
-                sim = d["_sim"].copy()
-                sim = sim.fillna(-1.0)  # fehlend ⇒ sicher < τ
-                s = pd.Series(0.0, index=d.index)
-                s.loc[sim >= offtopic_tau] = 1.0
+                sim = d["_sim"].fillna(-1.0)  # fehlend ⇒ sicher < τ
+                s = pd.Series(0.0, index=d.index); s.loc[sim >= st.session_state.get("offtopic_tau", 0.5)] = 1.0
+                # Achtung: wir nutzen unten den echten Sidebar-Wert; hier nur Default-Fallback falls nötig
                 results["offtopic"] = s.astype(float)
                 debug_cols["offtopic"] = {"similarity": sim}
-
     elif master_urls is not None:
         results["offtopic"] = pd.Series(0.0, index=master_urls.index)
+
+# Sidebar-Wert für τ anwenden (wenn Offtopic aktiv) — ersetzt das Fallback oben
+def apply_offtopic_tau(series_sim: pd.Series, tau: float) -> pd.Series:
+    s = pd.Series(0.0, index=series_sim.index)
+    s.loc[series_sim >= tau] = 1.0
+    return s
+
+# Wir überschreiben ggf. results["offtopic"] mit exakt gesetztem τ
+if active.get("offtopic") and "offtopic" in debug_cols and "similarity" in debug_cols["offtopic"]:
+    tau = st.sidebar.slider(
+        "Offtopic-Threshold τ (Ähnlichkeit)",
+        0.0, 1.0, 0.5, 0.01,
+        help="Binäres Gate im Offtopic-Kriterium: Cosine-Similarity ≥ τ ⇒ 1.0, sonst 0.0. Fehlende Embeddings zählen als < τ."
+    )
+    st.session_state["offtopic_tau"] = tau
+    sim = debug_cols["offtopic"]["similarity"]
+    results["offtopic"] = apply_offtopic_tau(sim, tau)
 
 # --- Revenue ---
 if active.get("revenue"):
@@ -803,9 +788,15 @@ if master_urls is not None and weight_keys:
     for k, wn in weights_norm.items():
         base += wn * df_out[f"score__{k}"].values
     df_out["base_score"] = base
-    df_out["priority_factor_url"] = priority_url.values if (active.get("priority") and priority_url is not None) else 1.0
-    df_out["priority_factor_global"] = priority_global
-    df_out["final_score"] = df_out["base_score"] * df_out["priority_factor_url"] * df_out["priority_factor_global"]
+
+    # Strategische Priorität (per-URL) — optional
+    if active.get("priority") and priority_url is not None:
+        df_out["priority_factor_url"] = priority_url.values
+        df_out["final_score"] = df_out["base_score"] * df_out["priority_factor_url"]
+    else:
+        df_out["priority_factor_url"] = 1.0
+        df_out["final_score"] = df_out["base_score"]
+
     df_out = df_out.sort_values("final_score", ascending=False).reset_index(drop=True)
 
     st.subheader("Ergebnis")
@@ -834,15 +825,13 @@ if master_urls is not None and weight_keys:
         "min_score": min_score if scoring_mode == "Rank (linear)" else None,
         "bucket_quantiles": [0.0, 0.5, 0.75, 0.9, 0.97, 1.0] if scoring_mode != "Rank (linear)" else None,
         "bucket_values": [0.0, 0.25, 0.5, 0.75, 1.0] if scoring_mode != "Rank (linear)" else None,
-        "offtopic_tau": offtopic_tau,
-        "priority_global": priority_global,
         "use_autodiscovery": use_autodiscovery,
         "weights": weights,
         "weights_norm": weights_norm,
         "active_criteria": [k for k in active.keys() if active[k]],
         "uploads_used": {k: name for k, (_, name) in st.session_state.uploads.items()},
         "column_maps": st.session_state.column_maps,
-        "notes": "Masterliste: Union/Schnittmenge/Zwei Quellen. All-Inlinks in Union enthalten. SC Query→URL aggregiert. Embeddings robust. Compound-Spalten gesplittet.",
+        "notes": "Masterliste: Union/Schnittmenge/Zwei Quellen. All-Inlinks in Union enthalten. SC Query→URL aggregiert. Embeddings robust. CSV-Compound-Fallback aktiv. Kein globaler Prioritätsfaktor.",
     }
     st.download_button("⬇️ Config (JSON)",
         data=json.dumps(config, indent=2).encode("utf-8"),
