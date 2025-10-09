@@ -1,7 +1,7 @@
 # app.py
 # ONE URL Scoreboard — Streamlit App
 # Author idea: Daniel Kremer (ONE Beyond Search) — implementation by ChatGPT
-# Version: Cross-file fallback + schema index cache + main keyword criterion + SC aggregation + robust embeddings (padding/outliers)
+# Version: Cross-file fallback + schema index cache + SC aggregation + robust embeddings + sidebar help + skip 'int' in master union
 
 import io
 import json
@@ -46,11 +46,12 @@ with st.expander("❓ Hilfe / Tool-Dokumentation", expanded=False):
 Fehlende Daten im **aktiven** Kriterium ⇒ Score = 0 (kein Reweighting pro URL).
 
 **Neu / wichtig**
-- **Cross-File-Fallback**: Falls die „vorgesehene“ Datei oder Spalte fehlt, sucht das Tool in **anderen Uploads** automatisch passende Spalten (per Alias).
-- **Schema-Index Cache**: Spalten-Suche ist extrem schnell (nur Header, gecached).
-- **Hauptkeyword-Potenzial**: URL + Hauptkeyword + erwartete Klicks *oder* Suchvolumen.
+- **Cross-File-Fallback** (mit Schema-Index): Fehlt die „vorgesehene“ Datei/Spalte, sucht das Tool in **anderen Uploads** passende Spalten (per Alias).
 - **SC-Aggregation**: Query-Level-SC-Dateien werden automatisch auf URL-Ebene aggregiert (Clicks/Impressions summiert).
 - **Embeddings robust**: Fehlende Embeddings ⇒ Outlier (unter τ). Uneinheitliche Vektorlängen ⇒ Padding/Trunc auf dominante Dimension.
+- **Master-URL-Union**: Die Datei **„Intern-Popularität“** wird **bewusst ignoriert** (enthält alle URLs eines Crawls).
+
+**URL-Normalisierung**: lowercase, `#fragment` entfernt, Tracking-Parameter raus (`utm_*`, `gclid`, …), http≠https, Trailing Slash bleibt unterscheidend.
 """)
 
 # ============= Session & Helpers =============
@@ -260,21 +261,45 @@ def get_ctr_for_pos(pos: float, ctr_df: pd.DataFrame) -> float:
     row = ctr_df.loc[ctr_df["position"] == p]
     return float(row["ctr"].values[0]) if not row.empty else 0.0
 
-# ============= Sidebar settings =============
+# ============= Sidebar settings (mit Hilfetexten) =============
 st.sidebar.header("⚙️ Einstellungen")
-scoring_mode = st.sidebar.radio("Scoring-Modus (global)", ["Rank (linear)", "Perzentil-Buckets"], index=0)
-min_score = st.sidebar.slider("Min-Score schlechteste vorhandene URL", 0.0, 0.5, 0.2, 0.05) if scoring_mode=="Rank (linear)" else 0.2
-with st.sidebar.expander("Bucket-Setup", expanded=False):
-    if scoring_mode != "Rank (linear)":
-        st.write("[0, .5, .75, .9, .97, 1.0] → [0, .25, .5, .75, 1.0]")
+scoring_mode = st.sidebar.radio(
+    "Scoring-Modus (global)",
+    ["Rank (linear)", "Perzentil-Buckets"],
+    index=0,
+    help="Bestimmt, wie rohe Metriken zu Teil-Scores werden: Entweder linear nach Rang (1.0 → min_score) oder in Quantil-Buckets."
+)
+min_score = (
+    st.sidebar.slider(
+        "Min-Score schlechteste vorhandene URL",
+        0.0, 0.5, 0.2, 0.05,
+        help="Nur für Rank (linear): Der schlechtesten (vorhandenen) URL wird mindestens dieser Score zugewiesen. Fehlende Werte bekommen immer 0.0."
+    )
+    if scoring_mode == "Rank (linear)" else 0.2
+)
 
-offtopic_tau = st.sidebar.slider("Offtopic-Threshold τ (Ähnlichkeit)", 0.0, 1.0, 0.5, 0.01)
-priority_global = st.sidebar.slider("Globaler Prioritäts-Faktor", 0.5, 2.0, 1.0, 0.05)
+with st.sidebar.expander("Bucket-Setup (Info)", expanded=False):
+    st.markdown(
+        "- **Quantile**: `[0, .5, .75, .9, .97, 1.0]`\n"
+        "- **Scores**: `[0, .25, .5, .75, 1.0]`\n\n"
+        "URLs ohne Wert im aktiven Kriterium bekommen **0.0**. "
+        "Die Buckets ordnen Werte entsprechend ihrer Verteilung ein (robust bei Ausreißern)."
+    )
 
+offtopic_tau = st.sidebar.slider(
+    "Offtopic-Threshold τ (Ähnlichkeit)",
+    0.0, 1.0, 0.5, 0.01,
+    help="Binäres Gate im Offtopic-Kriterium: Cosine-Similarity ≥ τ ⇒ 1.0, sonst 0.0. Fehlende Embeddings zählen als < τ."
+)
+priority_global = st.sidebar.slider(
+    "Globaler Prioritäts-Faktor",
+    0.5, 2.0, 1.0, 0.05,
+    help="Skaliert den finalen Score aller URLs global (z. B. 1.2 = +20 %). In Kombination mit per-URL-Overrides nutzbar."
+)
 use_autodiscovery = st.sidebar.toggle(
     "Autodiscovery über alle Uploads",
     value=True,
-    help="Wenn aus, werden nur die 'vorgesehenen' Dateien genutzt (kein Cross-File-Fallback)."
+    help="Wenn aktiv: Fehlen die vorgesehenen Dateien/Spalten, sucht das Tool automatisch in anderen Uploads nach passenden Spalten (per Alias)."
 )
 
 # ============= Kriterienauswahl (links im Hauptbereich) =============
@@ -370,13 +395,16 @@ build_schema_index()
 
 # ============= Master URL list builder =============
 st.subheader("Master-URL-Liste")
-st.markdown("Default: **Union aller hochgeladenen URLs**. Optional eigene Liste oder Merge aus zwei Uploads.")
+st.markdown("Default: **Union aller hochgeladenen URLs** (ausgenommen **Intern-Popularität**). Optional eigene Liste oder Merge aus zwei Uploads.")
 use_custom_master = st.checkbox("Eigene Masterliste hochladen (statt Union)")
 master_urls: Optional[pd.DataFrame] = None
 
 def collect_urls_from_uploads() -> Optional[pd.DataFrame]:
     urls = []
     for key, (df, _) in st.session_state.uploads.items():
+        if key == "int":
+            # WICHTIG: Inlinks-Crawl enthält alle URLs → NICHT für Union verwenden.
+            continue
         c = find_first_alias(df, "url")
         if c:
             d = ensure_url_column(df[[c]], c).rename(columns={c: "url_norm"})
@@ -461,13 +489,15 @@ if active.get("otv"):
         val_col = find_first_alias(df_u, "traffic_value")
         pot_col = find_first_alias(df_u, "potential_traffic_url")
         cpc_col = find_first_alias(df_u, "cpc")
-        d = join_on_master(df_u, urlc, [c for c in [val_col, pot_col, cpc_col] if c])
-        if val_col is not None:
-            raw_val = pd.to_numeric(d[val_col], errors="coerce")
-        elif pot_col is not None and cpc_col is not None:
-            raw_val = pd.to_numeric(d[pot_col], errors="coerce") * pd.to_numeric(d[cpc_col], errors="coerce")
-        elif pot_col is not None:
-            raw_val = pd.to_numeric(d[pot_col], errors="coerce")
+        keep_cols = [c for c in [val_col, pot_col, cpc_col] if c]
+        if keep_cols:
+            d = join_on_master(df_u, urlc, keep_cols)
+            if val_col is not None:
+                raw_val = pd.to_numeric(d[val_col], errors="coerce")
+            elif pot_col is not None and cpc_col is not None:
+                raw_val = pd.to_numeric(d[pot_col], errors="coerce") * pd.to_numeric(d[cpc_col], errors="coerce")
+            elif pot_col is not None:
+                raw_val = pd.to_numeric(d[pot_col], errors="coerce")
     if raw_val is None:
         found_kw = find_df_with_targets(["keyword","url","position","search_volume"], prefer_keys=["otv_kw"], use_autodiscovery=use_autodiscovery)
         if found_kw and master_urls is not None:
@@ -564,16 +594,13 @@ if active.get("offtopic"):
         tmp = df_emb[[urlc, ec]].copy()
         tmp["_vec"] = tmp[ec].map(parse_vec)
 
-        # 2) Dominante Dimension bestimmen (häufigste Vektorlänge)
         lengths = tmp["_vec"].dropna().map(lambda v: len(v)).tolist()
         if len(lengths) == 0:
-            # keine validen Embeddings → alles Outlier (Score 0)
             results["offtopic"] = pd.Series(0.0, index=master_urls.index)
             debug_cols["offtopic"] = {"similarity": pd.Series([np.nan]*len(master_urls))}
         else:
             dominant_len = Counter(lengths).most_common(1)[0][0]
 
-            # 3) Padding/Trunc auf dominante Länge
             def pad_or_trunc(v: Optional[np.ndarray], L: int) -> Optional[np.ndarray]:
                 if v is None: 
                     return None
@@ -582,14 +609,11 @@ if active.get("offtopic"):
                     return v
                 if n > L:
                     return v[:L]
-                # n < L → rechts mit 0 auffüllen
                 vv = np.zeros(L, dtype=float)
                 vv[:n] = v
                 return vv
 
             tmp["_vec2"] = tmp["_vec"].map(lambda v: pad_or_trunc(v, dominant_len))
-
-            # 4) Nur Vektoren mit dominanter Länge für Centroid
             valid = tmp[tmp["_vec2"].map(lambda v: isinstance(v, np.ndarray))]
             mat = np.vstack(valid["_vec2"].values) if not valid.empty else None
 
@@ -605,17 +629,15 @@ if active.get("offtopic"):
 
                 valid["_sim"] = valid["_vec2"].map(cos_sim)
 
-                # 5) Join auf Master; fehlende Embeddings explizit als Outlier (< τ)
                 d = master_urls.merge(valid[[urlc,"_sim"]], left_on="url_norm", right_on=urlc, how="left")
                 sim = d["_sim"].copy()
-                sim = sim.fillna(-1.0)  # fehlend ⇒ klar unter jedem sinnvollen τ ∈ [0,1]
+                sim = sim.fillna(-1.0)  # fehlend ⇒ sicher < τ
                 s = pd.Series(0.0, index=d.index)
                 s.loc[sim >= offtopic_tau] = 1.0
                 results["offtopic"] = s.astype(float)
                 debug_cols["offtopic"] = {"similarity": sim}
 
     elif master_urls is not None:
-        # keine Embedding-Datei → alles Outlier
         results["offtopic"] = pd.Series(0.0, index=master_urls.index)
 
 # --- Revenue ---
@@ -737,7 +759,7 @@ if master_urls is not None and weight_keys:
         "active_criteria": [k for k in active.keys() if active[k]],
         "uploads_used": {k: name for k, (_, name) in st.session_state.uploads.items()},
         "column_maps": st.session_state.column_maps,
-        "notes": "Cross-file Fallback + Schema-Index aktiv. SC-Daten URL-aggregiert. Embeddings: fehlend=Outlier, Padding auf dominante Dimension.",
+        "notes": "Cross-file Fallback + Schema-Index. SC-Daten URL-aggregiert. Embeddings: fehlend=Outlier, Padding auf dominante Dimension. Inlinks-Crawl aus Master-Union ausgeschlossen.",
     }
     st.download_button("⬇️ Config (JSON)",
         data=json.dumps(config, indent=2).encode("utf-8"),
