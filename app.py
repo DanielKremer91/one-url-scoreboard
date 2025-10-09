@@ -1,7 +1,7 @@
 # app.py
 # ONE URL Scoreboard — Streamlit App
 # Author idea: Daniel Kremer (ONE Beyond Search) — implementation by ChatGPT
-# Version: Cross-file fallback + schema index cache + SC aggregation + robust embeddings + sidebar help + skip 'int' in master union
+# Version: Union/Intersection Masterlist modes + include All-Inlinks in union + Page URL alias + robust compound column split
 
 import io
 import json
@@ -46,12 +46,12 @@ with st.expander("❓ Hilfe / Tool-Dokumentation", expanded=False):
 Fehlende Daten im **aktiven** Kriterium ⇒ Score = 0 (kein Reweighting pro URL).
 
 **Neu / wichtig**
-- **Cross-File-Fallback** (mit Schema-Index): Fehlt die „vorgesehene“ Datei/Spalte, sucht das Tool in **anderen Uploads** passende Spalten (per Alias).
+- **Master-URL-Liste**: Modi **Union (Voreinstellung)**, **Gemeinsamer Nenner (Schnittmenge)** oder **Aus zwei Quellen**.
+- **All-Inlinks-Datei** ist jetzt **in der Union enthalten** (wir verwenden die empfangenden Ziel-URLs).
+- **Cross-File-Fallback** (Schema-Index): Wenn die „vorgesehene“ Datei/Spalte fehlt, sucht das Tool in anderen Uploads passende Spalten (per Alias).
 - **SC-Aggregation**: Query-Level-SC-Dateien werden automatisch auf URL-Ebene aggregiert (Clicks/Impressions summiert).
 - **Embeddings robust**: Fehlende Embeddings ⇒ Outlier (unter τ). Uneinheitliche Vektorlängen ⇒ Padding/Trunc auf dominante Dimension.
-- **Master-URL-Union**: Die Datei **„Intern-Popularität“** wird **bewusst ignoriert** (enthält alle URLs eines Crawls).
-
-**URL-Normalisierung**: lowercase, `#fragment` entfernt, Tracking-Parameter raus (`utm_*`, `gclid`, …), http≠https, Trailing Slash bleibt unterscheidend.
+- **Compound-Spalten** (z. B. *URL;RD;BL*) werden automatisch in `url`, `ref_domains`, `backlinks` gesplittet.
 """)
 
 # ============= Session & Helpers =============
@@ -63,7 +63,10 @@ if "schema_index" not in st.session_state:
     st.session_state.schema_index = {}
 
 ALIASES = {
-    "url": ["url","page","seite","address","adresse","target","ziel","ziel_url","landing_page"],
+    # URL: erweitert um "page_url"
+    "url": [
+        "url","page","page_url","seite","address","adresse","target","ziel","ziel_url","landing_page"
+    ],
     "clicks": ["clicks","klicks","sc_clicks"],
     "impressions": ["impressions","impr","impressionen","search_impressions"],
     "position": ["position","avg_position","average_position","durchschnittliche_position","durchschn._position","rank","avg_rank"],
@@ -131,9 +134,42 @@ def read_table(uploaded) -> pd.DataFrame:
         df = pd.read_excel(io.BytesIO(data))
     return normalize_headers(df)
 
+# ---- Compound-Spalten automatisch splitten (URL;RD;BL) ----
+def try_split_compound_url_metrics(df: pd.DataFrame) -> pd.DataFrame:
+    # Wenn schon eine URL-Spalte existiert, nichts tun
+    url_aliases = set(ALIASES["url"])
+    if any(c in df.columns for c in url_aliases):
+        return df
+
+    # Kandidaten (z. B. "page_url_referring_domains_links_to_target") oder 1-Spalten-CSV
+    cand_cols = [c for c in df.columns if ("url" in c and ("ref" in c or "link" in c))]
+    if len(df.columns) == 1:  # 1-Spalten-Datei → diese Spalte testen
+        cand_cols = [df.columns[0]]
+
+    if not cand_cols:
+        return df
+
+    col = cand_cols[0]
+    s = df[col].astype(str)
+    if not s.str.contains(";").any():
+        return df
+
+    parts = s.str.split(";", n=2, expand=True)
+    if parts.shape[1] < 1:
+        return df
+
+    df2 = df.copy()
+    df2["url"] = parts[0].astype(str)
+    if parts.shape[1] >= 2:
+        df2["ref_domains"] = pd.to_numeric(parts[1], errors="coerce")
+    if parts.shape[1] >= 3:
+        df2["backlinks"] = pd.to_numeric(parts[2], errors="coerce")
+    return df2
+
 def store_upload(key: str, file):
     if file is None: return
     df = read_table(file)
+    df = try_split_compound_url_metrics(df)  # robust: spaltet ggf. URL;RD;BL auf
     st.session_state.uploads[key] = (df, file.name)
 
 def find_first_alias(df: pd.DataFrame, target: str) -> Optional[str]:
@@ -178,10 +214,6 @@ def build_schema_index():
 
 def find_df_with_targets(targets: List[str], prefer_keys: Optional[List[str]] = None, use_autodiscovery: bool = True
                          ) -> Optional[Tuple[str, pd.DataFrame, Dict[str,str]]]:
-    """
-    Returns (upload_key, df, colmap) where colmap maps targets->column names.
-    If use_autodiscovery=False, only checks prefer_keys.
-    """
     uploads = st.session_state.uploads
     idx = st.session_state.get("schema_index", {})
 
@@ -193,7 +225,6 @@ def find_df_with_targets(targets: List[str], prefer_keys: Optional[List[str]] = 
             if all(roles.get(t) for t in targets):
                 return k, df, {t: roles[t] for t in targets}
             return None
-        # live check fallback
         mapping = {}
         for t in targets:
             col = find_first_alias(df, t)
@@ -329,7 +360,7 @@ def need(s: str): uploads_needed_text.append(s)
 if active.get("sc_clicks") or active.get("sc_impr"): need("SC-Datei (URL, Clicks/Impressions; Query-Ebene ok)")
 if active.get("otv"): need("OTV-URL (optional), OTV-Keyword (optional), CTR-Kurve (optional)")
 if active.get("ext_pop"): need("Extern-Popularität (URL, backlinks, ref_domains)")
-if active.get("int_pop"): need("Intern-Popularität (URL, unique_inlinks)")
+if active.get("int_pop"): need("Intern-Popularität (URL, unique_inlinks ODER Kantenliste)")
 if active.get("llm_ref"): need("LLM Referral Traffic (URL, llm_ref_traffic)")
 if active.get("llm_crawl"): need("LLM Crawler Frequenz (URL, llm_crawl_freq)")
 if active.get("offtopic"): need("Embeddings (URL, embedding)")
@@ -360,7 +391,7 @@ if active.get("ext_pop"):
 
 if active.get("int_pop"):
     st.markdown("**URL-Popularität intern**")
-    store_upload("int", st.file_uploader("Intern-Popularität", type=["csv","xlsx"], key="upl_int"))
+    store_upload("int", st.file_uploader("Intern-Popularität (Crawl/Inlinks)", type=["csv","xlsx"], key="upl_int"))
 
 if active.get("llm_ref"):
     st.markdown("**LLM Referral Traffic**")
@@ -395,15 +426,27 @@ build_schema_index()
 
 # ============= Master URL list builder =============
 st.subheader("Master-URL-Liste")
-st.markdown("Default: **Union aller hochgeladenen URLs** (ausgenommen **Intern-Popularität**). Optional eigene Liste oder Merge aus zwei Uploads.")
-use_custom_master = st.checkbox("Eigene Masterliste hochladen (statt Union)")
+st.markdown("Wähle, wie die Masterliste gebildet wird: **Union** (Vereinigung, Default), **Gemeinsamer Nenner (Schnittmenge)** oder **aus zwei Quellen**. Eigene Liste ist ebenfalls möglich.")
+
+master_mode = st.radio(
+    "Masterlisten-Modus",
+    ["Union (alle Uploads)", "Gemeinsamer Nenner (Schnittmenge)", "Aus zwei vorhandenen Quellen"],
+    index=0,
+    help=(
+        "**Union:** Alle URLs aus allen Uploads (Duplikate entfernt). "
+        "**Schnittmenge:** Nur URLs, die in *allen* berücksichtigten Uploads vorkommen. "
+        "**Zwei Quellen:** Masterliste aus genau zwei gewählten Uploads."
+    )
+)
+
+use_custom_master = st.checkbox("Eigene Masterliste hochladen (statt oben gewähltem Modus)")
+
 master_urls: Optional[pd.DataFrame] = None
 
-def collect_urls_from_uploads() -> Optional[pd.DataFrame]:
+def collect_urls_union(include_keys: Optional[List[str]] = None) -> Optional[pd.DataFrame]:
     urls = []
     for key, (df, _) in st.session_state.uploads.items():
-        if key == "int":
-            # WICHTIG: Inlinks-Crawl enthält alle URLs → NICHT für Union verwenden.
+        if include_keys and key not in include_keys:
             continue
         c = find_first_alias(df, "url")
         if c:
@@ -413,30 +456,46 @@ def collect_urls_from_uploads() -> Optional[pd.DataFrame]:
         return pd.concat(urls, axis=0, ignore_index=True).drop_duplicates()
     return None
 
+def collect_urls_intersection() -> Optional[pd.DataFrame]:
+    sets = []
+    sources = 0
+    for key, (df, _) in st.session_state.uploads.items():
+        c = find_first_alias(df, "url")
+        if not c:
+            continue
+        d = ensure_url_column(df[[c]], c)
+        s = set(d[c].dropna().unique().tolist())
+        if len(s) == 0:
+            continue
+        sets.append(s)
+        sources += 1
+    if sources == 0:
+        return None
+    inter = set.intersection(*sets) if len(sets) > 1 else sets[0]
+    if not inter:
+        return pd.DataFrame({"url_norm": []})
+    return pd.DataFrame({"url_norm": sorted(inter)})
+
 if use_custom_master:
-    mf = st.file_uploader("Eigene Masterliste (Spalte: url/seite/...)", type=["csv","xlsx"], key="upl_master")
+    mf = st.file_uploader("Eigene Masterliste (Spalte: url/seite/page_url/...)", type=["csv","xlsx"], key="upl_master")
     if mf:
         dfm = read_table(mf)
+        dfm = try_split_compound_url_metrics(dfm)
         url_col = find_first_alias(dfm, "url") or st.selectbox("URL-Spalte in Masterliste wählen", dfm.columns, key="map_master_url")
         dfm = ensure_url_column(dfm, url_col)
         master_urls = dfm[[url_col]].rename(columns={url_col: "url_norm"}).drop_duplicates()
 else:
-    use_two_sources = st.checkbox("Statt Union: Masterliste aus bis zu zwei vorhandenen Dateien mergen")
-    if use_two_sources and st.session_state.uploads:
+    if master_mode == "Union (alle Uploads)":
+        master_urls = collect_urls_union()
+    elif master_mode == "Gemeinsamer Nenner (Schnittmenge)":
+        master_urls = collect_urls_intersection()
+    else:  # aus zwei Quellen
         available = list(st.session_state.uploads.keys())
         pick1 = st.selectbox("Quelle 1", options=[None] + available, index=0, key="master_src1")
         pick2 = st.selectbox("Quelle 2 (optional)", options=[None] + available, index=0, key="master_src2")
-        urls = []
-        for pick in [pick1, pick2]:
-            if pick and pick in st.session_state.uploads:
-                df, _ = st.session_state.uploads[pick]
-                c = find_first_alias(df, "url")
-                if c:
-                    urls.append(ensure_url_column(df[[c]], c).rename(columns={c: "url_norm"}))
-        if urls:
-            master_urls = pd.concat(urls, axis=0, ignore_index=True).drop_duplicates()
-    else:
-        master_urls = collect_urls_from_uploads()
+        if pick1:
+            keys = [pick1] + ([pick2] if pick2 else [])
+            master_urls = collect_urls_union(include_keys=keys)
 
 if master_urls is None or master_urls.empty:
     st.info("Noch keine Master-URLs erkannt. Lade mindestens eine Datei mit URL-Spalte hoch **oder** lade eine eigene Masterliste.")
@@ -535,12 +594,37 @@ if active.get("ext_pop"):
 
 # --- Internal popularity (Unique Inlinks) ---
 if active.get("int_pop"):
+    # Bevorzugt fertige Zählspalte; Fallback: Kantenliste (source -> url) → distinct Quellen zählen
     found = find_df_with_targets(["url","unique_inlinks"], prefer_keys=["int"], use_autodiscovery=use_autodiscovery)
+
+    if not found:
+        found_edges = find_df_with_targets(["url"], prefer_keys=["int"], use_autodiscovery=use_autodiscovery)
+        if found_edges:
+            _, df_edges, cm_edges = found_edges
+            urlc = cm_edges["url"]
+            src_candidates = [
+                "source","from","src","source_url","referrer","referrer_url",
+                "origin","origin_url","quelle","von","inlink_source","inlink_from"
+            ]
+            src = next((c for c in src_candidates if c in df_edges.columns and c != urlc), None)
+            if src:
+                df_tmp = ensure_url_column(df_edges[[urlc, src]].copy(), urlc)
+                df_tmp[src] = df_tmp[src].map(normalize_url)
+                agg = (
+                    df_tmp
+                    .dropna(subset=[src])
+                    .groupby(urlc, as_index=False)[src]
+                    .nunique()
+                    .rename(columns={src: "unique_inlinks"})
+                )
+                found = ("int_edges", agg, {"url": urlc, "unique_inlinks": "unique_inlinks"})
+
     if found and master_urls is not None:
         _, df_i, cm = found
         d = join_on_master(df_i, cm["url"], [cm["unique_inlinks"]])
-        results["int_pop"] = mode_score(d[cm["unique_inlinks"]]).fillna(0.0)
-        debug_cols["int_pop"] = {"unique_inlinks_raw": d[cm["unique_inlinks"]]}
+        vals = pd.to_numeric(d[cm["unique_inlinks"]], errors="coerce").clip(lower=0)
+        results["int_pop"] = mode_score(vals).fillna(0.0)
+        debug_cols["int_pop"] = {"unique_inlinks_raw": vals}
     elif master_urls is not None:
         results["int_pop"] = pd.Series(0.0, index=master_urls.index)
 
@@ -573,7 +657,6 @@ if active.get("offtopic"):
         _, df_emb, cm = found
         urlc, ec = cm["url"], cm["embedding"]
 
-        # 1) Parsing in Vektoren
         def parse_vec(x):
             if isinstance(x, (list, tuple, np.ndarray)): 
                 try: return np.array(x, dtype=float)
@@ -759,7 +842,7 @@ if master_urls is not None and weight_keys:
         "active_criteria": [k for k in active.keys() if active[k]],
         "uploads_used": {k: name for k, (_, name) in st.session_state.uploads.items()},
         "column_maps": st.session_state.column_maps,
-        "notes": "Cross-file Fallback + Schema-Index. SC-Daten URL-aggregiert. Embeddings: fehlend=Outlier, Padding auf dominante Dimension. Inlinks-Crawl aus Master-Union ausgeschlossen.",
+        "notes": "Masterliste: Union/Schnittmenge/Zwei Quellen. All-Inlinks in Union enthalten. SC Query→URL aggregiert. Embeddings robust. Compound-Spalten gesplittet.",
     }
     st.download_button("⬇️ Config (JSON)",
         data=json.dumps(config, indent=2).encode("utf-8"),
