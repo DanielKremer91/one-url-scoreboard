@@ -7,9 +7,10 @@
 import io
 import json
 import re
+import unicodedata
 from typing import Dict, List, Optional, Tuple
 from collections import Counter
-from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode  # NEU
+from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 
 import numpy as np
 import pandas as pd
@@ -21,7 +22,6 @@ st.markdown("""
 <style>
 .main .block-container { max-width: 100% !important; padding: 1rem 1rem 2rem !important; }
 [data-testid="stSidebar"] { min-width: 260px !important; max-width: 260px !important; }
-/* .reportview-container .main .block-container { ... }  -- veraltet, entfernt */
 </style>
 """, unsafe_allow_html=True)
 
@@ -52,7 +52,7 @@ Fehlende Daten im **aktiven** Kriterium ⇒ Score = 0 (kein Reweighting pro URL)
 - **All-Inlinks-Datei** (Crawl/Kantenliste) wird **in die Union aufgenommen** (empfangende Ziel-URLs).
 - **Search Console Query-Level** wird **automatisch** pro URL aggregiert.
 - **Embeddings robust**: Fehlende Embeddings ⇒ Outlier (unter τ). Uneinheitliche Längen ⇒ Padding/Trunc auf dominante Dimension.
-- **CSV-Fallback**: Falls eine Datei nur **eine** Spalte hat, wird automatisch nach `,` `;` `|` oder Tab gesplittet; **erste Zeile = Header**.
+- **CSV-Fallback**: Falls eine Datei nur **eine** Spalte hat, wird automatisch nach `;` `,` `|` oder Tab gesplittet; **erste Zeile = Header**.
 - **Kein globaler Prioritätsfaktor**. **Strategische Priorität** per URL bleibt optional.
 """)
 
@@ -71,7 +71,6 @@ def _reset_all_state():
 with st.sidebar:
     if st.button("🧹 Cache leeren (Uploads & Mappings)"):
         _reset_all_state()
-        # kompatibel mit alten und neuen Streamlit-Versionen
         if hasattr(st, "rerun"):
             st.rerun()
         else:
@@ -98,7 +97,6 @@ st.session_state.setdefault("llm_crawl_mode", None)
 st.session_state.setdefault("llm_bot_column_choices", [])
 
 ALIASES = {
-    # URL-Aliase erweitert: erkennt u. a. Page URL / Address
     "url": ["url","page","page_url","seite","address","adresse","target","ziel","ziel_url","landing_page"],
     "clicks": ["clicks","klicks","traffic","besuche","sc_clicks"],
     "impressions": ["impressions","impr","impressionen","search_impressions"],
@@ -107,12 +105,9 @@ ALIASES = {
     "cpc": ["cpc","cost_per_click"],
     "traffic_value": ["traffic_value","otv","organic_traffic_value","value","potential_value","trafficwert","traffic_wert"],
     "potential_traffic_url": ["potential_traffic_url","potential_traffic","pot_traffic","potentielle_klicks","erwartete_klicks","erwarteter_traffic","estimated_traffic","estimated_clicks"],
-    # extern
     "backlinks": ["backlinks","links_total","bl","inbound_links","links_to_target"],
     "ref_domains": ["ref_domains","referring_domains","rd","domains_ref","verweisende_domains","referring_domains"],
-    # intern
     "unique_inlinks": ["unique_inlinks","internal_inlinks","inlinks_unique","eingehenden_links","inlinks","eingehende_links","inlinks_unique_count","incoming_links_unique"],
-    # LLM referrals/crawl
     "llm_ref_traffic": ["llm_ref_traffic","llm_referrals","ai_referrals","llm_popularity","llm_traffic","sessions","sitzungen","visits","hits","traffic"],
     "llm_crawl_freq": ["llm_crawl_freq","ai_crawls","llm_crawls","llm_crawler_visits","crawls","visits","hits","requests"],
     "user_agent": ["user_agent","ua","agent","crawler","bot","useragent"],
@@ -120,7 +115,6 @@ ALIASES = {
     "revenue": ["revenue","umsatz","organic_revenue","organic_umsatz","organic_sales"],
     "priority_factor": ["priority_factor","prio","priority","priorität","gewicht","gewichtung","boost","override","weight_override","wichtigkeit","boost_faktor","faktor","manual_weight"],
     "keyword": ["keyword","query","suchbegriff","suchanfrage"],
-    # Hauptkeyword-Potenzial
     "main_keyword": ["main_keyword","hauptkeyword","primary_keyword","focus_keyword","focus_kw","haupt_kw","haupt-keyword"],
     "expected_clicks": ["expected_clicks","exp_clicks","expected_clicks_main","expected_clicks_kw","erwartete_klicks","erw_klicks"],
 }
@@ -128,7 +122,6 @@ ALIASES = {
 TRACKING_PARAMS_PREFIXES = ["utm_", "icid_"]
 TRACKING_PARAMS_EXACT = {"gclid","fbclid","msclkid","mc_eid","yclid"}
 
-# ---- AI/LLM Bot Muster (inkludieren / exkludieren) ----
 EXCLUDE_CLASSIC_BOTS = ["googlebot", "googlebot smartphone", "bingbot", "yandex", "baidu"]
 INCLUDE_AI_BOTS = [
     "gptbot", "openai", "anthropic", "claudebot", "perplexitybot",
@@ -140,13 +133,15 @@ GENERIC_BOT_TOKENS = [
     "facebook ai", "google-extended", "openai", "anthropic", "metabot", "meta-ai", "youbot", "duckassist","oai","oai-searchbot"
 ]
 
-# ---- Normalisierungs-Helper (NEU) ----
+# ---- Normalisierung & Utilities ----
 def _alias_norm(x: str) -> str:
-    # gleiche Simplifizierung wie bei normalize_headers()
     return re.sub(r"[^\w]+", "", str(x).lower())
 
+def _clean_invisibles(x: str) -> str:
+    return "".join(ch for ch in str(x) if unicodedata.category(ch) != "Cf")
+
 def normalize_header(col: str) -> str:
-    c = str(col).strip().lower()
+    c = _clean_invisibles(str(col)).strip().lower()
     c = re.sub(r"[^\w]+", "_", c)
     c = re.sub(r"_+", "_", c).strip("_")
     return c
@@ -156,12 +151,23 @@ def normalize_headers(df: pd.DataFrame) -> pd.DataFrame:
     df.columns = [normalize_header(c) for c in df.columns]
     return df
 
-# ---- Tracking-Query säubern & URL robust normalisieren (NEU) ----
+def to_numeric_smart(s: pd.Series) -> pd.Series:
+    out = pd.to_numeric(s, errors="coerce")
+    # Wenn alles NaN: evtl. deutsches Dezimalformat
+    if out.notna().sum() == 0 and s.astype(str).str.contains(r"\d+,\d+", regex=True).any():
+        s2 = (
+            s.astype(str)
+             .str.replace(".", "", regex=False)  # Tausenderpunkt raus
+             .str.replace(",", ".", regex=False)  # Komma -> Punkt
+        )
+        out = pd.to_numeric(s2, errors="coerce")
+    return out
+
+# ---- Tracking-Query säubern & URL robust normalisieren ----
 def normalize_url(u: str) -> Optional[str]:
     if not isinstance(u, str) or not u.strip():
         return None
     s = u.strip()
-    # Anker entfernen
     if "#" in s:
         s = s.split("#", 1)[0]
     try:
@@ -171,47 +177,27 @@ def normalize_url(u: str) -> Optional[str]:
     scheme = (sp.scheme or "https").lower()
     netloc = sp.netloc.lower()
 
-    # Query filtern (utm_, gclid, ...)
     keep_pairs = []
     for k, v in parse_qsl(sp.query, keep_blank_values=True):
         kl = k.lower()
-        if any(kl.startswith(pref) for pref in TRACKING_PARAMS_PREFIXES):
-            continue
-        if kl in TRACKING_PARAMS_EXACT:
-            continue
+        if any(kl.startswith(pref) for pref in TRACKING_PARAMS_PREFIXES): continue
+        if kl in TRACKING_PARAMS_EXACT: continue
         keep_pairs.append((k, v))
     query = urlencode(keep_pairs, doseq=True)
 
-    # Standardports entfernen
     if scheme == "http" and netloc.endswith(":80"):
         netloc = netloc[:-3]
     if scheme == "https" and netloc.endswith(":443"):
         netloc = netloc[:-4]
 
-    # Pfad nicht lowercased (Case-Sensitivität beachten)
     return urlunsplit((scheme, netloc, sp.path, query, "")) or None
-
-def strip_tracking_params(qs: str) -> str:
-    # legacy helper (wird nicht mehr direkt genutzt, bleibt für Kompatibilität)
-    if not qs: return ""
-    kept = []
-    for pair in qs.split("&"):
-        if "=" in pair:
-            k, v = pair.split("=", 1)
-        else:
-            k, v = pair, ""
-        kl = k.lower()
-        if any(kl.startswith(p) for p in TRACKING_PARAMS_PREFIXES): continue
-        if kl in TRACKING_PARAMS_EXACT: continue
-        kept.append(pair)
-    return "&".join(kept)
 
 def read_table(uploaded) -> pd.DataFrame:
     """
-    Robust CSV/Excel reader:
-    - Für CSV: Wenn nur eine Spalte vorhanden ist, wird automatisch nach , ; | oder Tab gesplittet.
-    - Erste Zeile wird IMMER als Header interpretiert.
-    - Für Excel bleibt alles unverändert.
+    CSV/Excel robust:
+    - CSV: Erst normaler Read (mehrspaltig? -> fertig). Wenn single-column: Encoder+Trenner Heuristik, dann Fallback manuelles Splitten.
+    - Excel: normal lesen.
+    - Erste Zeile = Header (bei manuellem Split).
     """
     data = uploaded.read()
     name = (uploaded.name or "").lower()
@@ -219,52 +205,77 @@ def read_table(uploaded) -> pd.DataFrame:
     def _as_bytesio():
         return io.BytesIO(data)
 
+    # --- CSV ---
     if name.endswith(".csv"):
-        # 1) Normales Einlesen
+        # 1) Schnellpfad: Standard-Read (z. B. , als Trenner) – wenn bereits mehrspaltig, passt es
         try:
-            df = pd.read_csv(_as_bytesio(), low_memory=False)
+            df = pd.read_csv(_as_bytesio())
         except Exception:
+            df = pd.DataFrame()
+        if df.shape[1] > 1:
+            return normalize_headers(df)
+
+        # 2) Heuristiken: encodings × seps (python engine, ohne low_memory)
+        for enc, sep in [
+            ("utf-8-sig", ";"), ("utf-8-sig", ","), ("utf-8-sig", "\t"),
+            ("utf-8", ";"), ("utf-8", ","), ("cp1252", ";"), ("latin-1", ";")
+        ]:
             try:
-                df = pd.read_csv(_as_bytesio(), sep=None, engine="python", low_memory=False)
+                df_try = pd.read_csv(_as_bytesio(), encoding=enc, sep=sep, engine="python")
+                if df_try.shape[1] > 1:
+                    return normalize_headers(df_try)
             except Exception:
-                df = pd.DataFrame()
-        # 2) Single-column → rate Delimiter
-        if df.shape[1] == 1:
-            for sep in [";", ",", "\t", "|"]:
+                continue
+
+        # 3) Auto-Sniff mit python engine (ohne low_memory)
+        try:
+            df_auto = pd.read_csv(_as_bytesio(), sep=None, engine="python")
+            if df_auto.shape[1] > 1:
+                return normalize_headers(df_auto)
+        except Exception:
+            pass
+
+        # 4) Manuelles Splitten, wenn immer noch eine Spalte
+        if df.shape[1] == 1 or df.empty:
+            if df.empty:
+                # letzter Versuch: lesbar machen
                 try:
-                    df2 = pd.read_csv(_as_bytesio(), sep=sep, engine="python", low_memory=False)
-                    if df2.shape[1] > 1:
-                        df = df2
-                        break
+                    df = pd.read_csv(_as_bytesio(), encoding="utf-8-sig", header=None)
                 except Exception:
-                    pass
-        # 3) Immer noch single-column → manuell splitten
-        if df.shape[1] == 1:
-            col = df.columns[0]
+                    df = pd.DataFrame({ "col_1": [] })
+            col = df.columns[0] if len(df.columns) else "col_1"
             s = df[col].astype(str)
-            counts = {";": s.str.count(";").sum(), ",": s.str.count(",").sum(), "\t": s.str.count("\t").sum(), "|": s.str.count("|").sum()}
-            delim = max(counts, key=counts.get) if any(v > 0 for v in counts.values()) else ","
+            counts = {
+                ";": s.str.count(";").sum(),
+                ",": s.str.count(",").sum(),
+                "\t": s.str.count("\t").sum(),
+                "|": s.str.count("|").sum()
+            }
+            delim = max(counts, key=counts.get) if any(v > 0 for v in counts.values()) else ";"
             parts = s.str.split(delim, expand=True)
-            if parts.shape[0] > 1:
-                header = parts.iloc[0].fillna("").astype(str).tolist()
-                parts = parts[1:].reset_index(drop=True)
-                parts.columns = [normalize_header(h) for h in header]
+
+            # Erste Zeile als Header interpretieren, wenn sie „headerhaft“ aussieht (keine Zahlenkolonne)
+            header_row = parts.iloc[0].astype(str).tolist() if parts.shape[0] > 0 else []
+            looks_like_header = any(not re.fullmatch(r"\s*[\d\.,]+\s*", h) for h in header_row)
+            if looks_like_header and parts.shape[0] > 1:
+                parts = parts.iloc[1:].reset_index(drop=True)
+                parts.columns = [normalize_header(h) for h in header_row]
             else:
                 parts.columns = [f"col_{i+1}" for i in range(parts.shape[1])]
-            df = parts
-        df = normalize_headers(df)
-        return df
 
-    # Excel
+            return normalize_headers(parts)
+
+        return normalize_headers(df)
+
+    # --- Excel ---
     try:
         df = pd.read_excel(io.BytesIO(data))
     except Exception:
         try:
-            df = pd.read_csv(io.BytesIO(data), low_memory=False)
+            df = pd.read_csv(io.BytesIO(data))
         except Exception:
             df = pd.DataFrame()
-    df = normalize_headers(df)
-    return df
+    return normalize_headers(df)
 
 # ---- CSV-Compound-Fallback ("URL;RD;BL") — nur wenn keine URL-Spalte erkannt wird ----
 def try_split_compound_url_metrics(df: pd.DataFrame) -> pd.DataFrame:
@@ -283,8 +294,8 @@ def try_split_compound_url_metrics(df: pd.DataFrame) -> pd.DataFrame:
     parts = s.str.split(";", n=2, expand=True)
     df2 = df.copy()
     df2["url"] = parts[0].astype(str)
-    if parts.shape[1] >= 2: df2["ref_domains"] = pd.to_numeric(parts[1], errors="coerce")
-    if parts.shape[1] >= 3: df2["backlinks"] = pd.to_numeric(parts[2], errors="coerce")
+    if parts.shape[1] >= 2: df2["ref_domains"] = to_numeric_smart(parts[1])
+    if parts.shape[1] >= 3: df2["backlinks"] = to_numeric_smart(parts[2])
     return df2
 
 def store_upload(key: str, file):
@@ -295,15 +306,12 @@ def store_upload(key: str, file):
 
 def find_first_alias(df: pd.DataFrame, target: str) -> Optional[str]:
     candidates = ALIASES.get(target, [])
-    # direkte Treffer
     for c in candidates:
         if c in df.columns: return c
-    # normalisierte Treffer (NEU: gleiche Normalisierung wie bei Spalten)
     cols_norm = { _alias_norm(c): c for c in df.columns }
     for c in candidates:
         cn = _alias_norm(c)
         if cn in cols_norm: return cols_norm[cn]
-    # zusätzliche Heuristik für URL
     if target == "url":
         for col in df.columns:
             cl = col.lower()
@@ -333,7 +341,7 @@ def ensure_url_column(df: pd.DataFrame, url_col: str) -> pd.DataFrame:
     df[url_col] = df[url_col].map(normalize_url)
     return df[df[url_col].notna()]
 
-# ---------- Schema-Index Cache (immer frisch aufgebaut) ----------
+# ---------- Schema-Index Cache ----------
 def build_schema_index():
     idx = {}
     for key, (df, name) in st.session_state.uploads.items():
@@ -375,7 +383,7 @@ def find_df_with_targets(targets: List[str], prefer_keys: Optional[List[str]] = 
 
 # ============= Scoring =============
 def rank_scores(series: pd.Series, min_score: float = 0.2) -> pd.Series:
-    s = pd.to_numeric(series, errors="coerce").clip(lower=0)
+    s = to_numeric_smart(series).clip(lower=0)
     mask = s.notna()
     if mask.sum() <= 1:
         out = pd.Series(0.0, index=s.index); out[mask] = 1.0; return out
@@ -388,14 +396,13 @@ def rank_scores(series: pd.Series, min_score: float = 0.2) -> pd.Series:
 def bucket_scores(series: pd.Series,
                   quantiles: List[float] = [0.0, 0.5, 0.75, 0.9, 0.97, 1.0],
                   bucket_values: List[float] = [0.0, 0.25, 0.5, 0.75, 1.0]) -> pd.Series:
-    s = pd.to_numeric(series, errors="coerce").clip(lower=0)
+    s = to_numeric_smart(series).clip(lower=0)
     mask = s.notna()
     res = pd.Series(0.0, index=s.index)
     if mask.sum() == 0: return res
     try:
         qvals = s[mask].quantile(quantiles).values
         bins = np.unique(qvals)
-        # Fallback: wenn zu wenig unterschiedliche Quantile → rank_scores statt alle auf Top-Bucket
         if len(bins) < 3:
             return rank_scores(series, min_score=0.2)
         cats = pd.cut(s[mask], bins=bins, include_lowest=True, labels=False)
@@ -414,14 +421,13 @@ def default_ctr_curve() -> pd.DataFrame:
                          "ctr": [0.30,0.15,0.10,0.07,0.05,0.04,0.035,0.03,0.025,0.02,0.018,0.016,0.014,0.012,0.010,0.009,0.008,0.007,0.006,0.005]})
 
 def get_ctr_for_pos(pos: float, ctr_df: pd.DataFrame) -> float:
-    # konservativer: nach oben runden statt runden → vermeidet 1↔2 Sprünge um 1.5 herum
     try: p = int(np.ceil(float(pos)))
     except Exception: return 0.0
     p = max(1, min(p, int(ctr_df["position"].max())))
     row = ctr_df.loc[ctr_df["position"] == p]
     return float(row["ctr"].values[0]) if not row.empty else 0.0
 
-# ============= Sidebar settings (mit Hilfetexten) =============
+# ============= Sidebar settings =============
 st.sidebar.header("⚙️ Einstellungen")
 scoring_mode = st.sidebar.radio(
     "Scoring-Modus (global)",
@@ -505,12 +511,10 @@ for group, crits in CRITERIA_GROUPS.items():
 st.markdown("---")
 st.subheader("Basierend auf den gewählten Kriterien benötigen wir folgende Dateien")
 
-# Search Console
 if active.get("sc_clicks") or active.get("sc_impr"):
     st.markdown("**Search Console — erwartet:** `URL` (Alias: url/page/page_url/address), `Clicks/Klicks`, `Impressions/Impressionen`. **Query-Ebene ist ok** – wird pro URL aggregiert.")
     store_upload("sc", st.file_uploader("Search Console Datei (CSV/XLSX)", type=["csv","xlsx"], key="upl_sc"))
 
-# OTV
 if active.get("otv"):
     st.markdown("**Organic Traffic Value — erwartet:**")
     st.markdown("- **Variante A (URL-Value):** `URL`, `traffic_value` **oder** `potential_traffic_url` (+ optional `cpc`).")
@@ -520,28 +524,24 @@ if active.get("otv"):
     with c2: store_upload("otv_kw",  st.file_uploader("OTV: Keyword-Datei (optional)", type=["csv","xlsx"], key="upl_otv_kw"))
     with c3: store_upload("ctr_curve", st.file_uploader("CTR-Kurve (optional, genutzt auch für Expected Clicks)", type=["csv","xlsx"], key="upl_ctr"))
 
-# Extern-Popularität
 if active.get("ext_pop"):
-    st.markdown("**URL-Popularität extern — erwartet:** `URL`, `backlinks` (Alias inkl. `links_to_target`), `ref_domains` (Alias inkl. `referring_domains`).")
+    st.markdown("**URL-Popularität extern — erwartet:** `URL`, `backlinks`, `ref_domains`.")
     store_upload("ext", st.file_uploader("Extern-Popularität (CSV/XLSX)", type=["csv","xlsx"], key="upl_ext"))
 
-# Intern-Popularität
 if active.get("int_pop"):
     st.markdown("**URL-Popularität intern — erwartet:**")
     st.markdown("- **Variante A:** `URL`, `unique_inlinks`.")
-    st.markdown("- **Variante B (Kantenliste):** `URL` (= Ziel) **und** eine Quellspalte (z. B. `source`, `source_url`, `referrer`) – wird zu `unique_inlinks` aggregiert.")
+    st.markdown("- **Variante B (Kantenliste):** `URL` (= Ziel) **und** eine Quellspalte (z. B. `source`, `source_url`, `referrer`).")
     store_upload("int", st.file_uploader("Intern-Popularität (Crawl/Inlinks)", type=["csv","xlsx"], key="upl_int"))
 
-# LLM Referral
 if active.get("llm_ref"):
-    st.markdown("**LLM Referrals — erwartet:** **genau zwei Spalten**: `URL`, `Sitzungen / LLM-Traffic` (Alias: sessions/sitzungen/visits/hits/traffic).")
+    st.markdown("**LLM Referrals — erwartet:** **genau zwei Spalten**: `URL`, `Sitzungen / LLM-Traffic`.")
     store_upload("llmref", st.file_uploader("LLM-Referrals (CSV/XLSX)", type=["csv","xlsx"], key="upl_llmref"))
 
-# === LLM Crawl (aggregiert ODER Logfile) — Upload + Bot-Auswahl-UI ===
 if active.get("llm_crawl"):
     st.markdown("**LLM Crawler Frequenz — erwartet:**")
-    st.markdown("- **Variante A (aggregiert):** `URL` + eine oder mehrere Spalten mit Bot-Besuchen (z. B. `GPTBot`, `ClaudeBot`, `PerplexityBot`, `OAI-SearchBot`, …).")
-    st.markdown("- **Variante B (Logfile):** `URL`, `user_agent` (+ optional `sessions/visits/hits/requests`). Klassische Bots (Googlebot, Bingbot, Yandex, Baidu) sind exkludiert.")
+    st.markdown("- **Variante A (aggregiert):** `URL` + mehrere Bot-Spalten (`GPTBot`, `ClaudeBot`, `PerplexityBot`, `OAI-SearchBot`, …).")
+    st.markdown("- **Variante B (Logfile):** `URL`, `user_agent` (+ optional `sessions/visits/hits/requests`). Klassische Bots werden exkludiert.")
     store_upload("llmcrawl", st.file_uploader("LLM-Crawl (CSV/XLSX)", type=["csv", "xlsx"], key="upl_llmcrawl"))
 
     if "llmcrawl" in st.session_state.uploads:
@@ -549,8 +549,6 @@ if active.get("llm_crawl"):
         cols = list(df_llm.columns)
         url_col = find_first_alias(df_llm, "url")
         ua_col  = find_first_alias(df_llm, "user_agent")
-
-        # Modus bestimmen: wenn 'user_agent' existiert => Logfile, sonst Aggregat
         mode = "log" if ua_col else "aggregated"
         st.session_state["llm_crawl_mode"] = mode
 
@@ -558,20 +556,20 @@ if active.get("llm_crawl"):
             st.error("Konnte keine URL-Spalte erkennen. Bitte prüfe die Datei (Header `URL`).")
         else:
             if mode == "aggregated":
-                # Spalten-Kandidaten ermitteln: numerisch, keine klassischen Summen-/Meta-/irrelevanten Spalten
                 classic_bot_cols = {"googlebot","googlebot_smartphone","bingbot","yandex","baidu"}
-                ignore_cols_exact = {
-                    "alle_bots","gesamt","total","summe","sum","events","anzahl_ereignisse",
-                    "ref_domains","referring_domains","backlinks","links_to_target"
-                }
+                ignore_cols_exact = {"alle_bots","gesamt","total","summe","sum","events","anzahl_ereignisse",
+                                     "ref_domains","referring_domains","backlinks","links_to_target"}
                 ignore_like_tokens = {"co2","antwortzeit","response","ms"}
 
                 def is_numeric_series(s: pd.Series) -> bool:
-                    try:
-                        pd.to_numeric(s, errors="coerce")  # robust
+                    a = pd.to_numeric(s, errors="coerce")
+                    if a.notna().any():  # normaler Fall
                         return True
-                    except Exception:
-                        return False
+                    # zweiter Versuch: deutsches Dezimalformat
+                    if s.astype(str).str.contains(r"\d+,\d+", regex=True).any():
+                        b = to_numeric_smart(s)
+                        return b.notna().any()
+                    return False
 
                 cand_cols = []
                 for c in cols:
@@ -584,18 +582,15 @@ if active.get("llm_crawl"):
                         continue
                     if cl in classic_bot_cols:
                         continue
-                    if is_numeric_series(df_llm[c]):  # nur numerische Spalten zulassen
+                    if is_numeric_series(df_llm[c]):
                         cand_cols.append(c)
 
-                # sinnvolle Default-Auswahl: Spalten, die wie AI/LLM-Botnamen aussehen
-                ai_pref_tokens = [
-                    "gpt","openai","oai","oai-searchbot","claude","anthropic",
-                    "perplexity","perplexitybot","bytespider","ccbot","cohere",
-                    "meta-ai","facebook","youbot","duckassist","kagi"
-                ]
+                ai_pref_tokens = ["gpt","openai","oai","oai-searchbot","claude","anthropic",
+                                  "perplexity","perplexitybot","bytespider","ccbot","cohere",
+                                  "meta-ai","facebook","youbot","duckassist","kagi"]
                 default_ai = [c for c in cand_cols if any(tok in c.lower() for tok in ai_pref_tokens)]
 
-                st.info("Wähle, **welche Bot-Spalten** in die Berechnung einfließen sollen. Klassische Bots (Googlebot, Bingbot, Yandex, Baidu) werden ignoriert.")
+                st.info("Wähle, **welche Bot-Spalten** in die Berechnung einfließen sollen. Klassische Bots werden ignoriert.")
                 st.session_state["llm_bot_column_choices"] = st.multiselect(
                     "Bot-Spalten auswählen",
                     options=cand_cols,
@@ -603,11 +598,10 @@ if active.get("llm_crawl"):
                     help="Nur die hier ausgewählten Spalten werden je URL aufsummiert."
                 )
 
-                # kleine Vorschau
                 if st.session_state["llm_bot_column_choices"]:
                     tmp = ensure_url_column(df_llm.copy(), url_col)
                     for c in st.session_state["llm_bot_column_choices"]:
-                        tmp[c] = pd.to_numeric(tmp[c], errors="coerce").fillna(0)
+                        tmp[c] = to_numeric_smart(tmp[c]).fillna(0)
                     tmp["_llm_sum_preview"] = tmp[st.session_state["llm_bot_column_choices"]].sum(axis=1)
                     prev = (
                         tmp[[url_col, "_llm_sum_preview"]]
@@ -620,7 +614,6 @@ if active.get("llm_crawl"):
                     st.warning("Keine Bot-Spalten ausgewählt. Es werden 0 Besuche gezählt.")
 
             else:
-                # Logfile-UI: erkannte Bots vorschlagen + Include/Exclude + Freitext
                 uas = df_llm[ua_col].astype(str).fillna("")
                 bot_counts: Dict[str, int] = {}
 
@@ -659,34 +652,25 @@ if active.get("llm_crawl"):
                         st.write(", ".join(f"{b} ({bot_counts[b]})" for b in other_bots) or "—")
 
                     all_bots_sorted = sorted(bot_counts.keys(), key=lambda x: (-bot_counts[x], x))
-                    st.info("Wähle unten, **welche Bots zählen sollen** (einschließen) und **welche ausgeschlossen werden**. Freitext erlaubt (kommagetrennt).")
-
+                    st.info("Wähle unten, **welche Bots zählen sollen** (einschließen) und **welche ausgeschlossen werden**.")
                     st.session_state.llm_bot_include = st.multiselect(
                         "Bots einschließen (werden gezählt)",
                         options=all_bots_sorted,
                         default=[b for b in detected_ai if b in all_bots_sorted],
-                        help="Nur User-Agents, die einen dieser Begriffe enthalten (Case-insensitive), werden gezählt."
                     )
                     st.session_state.llm_bot_exclude = st.multiselect(
                         "Bots ausschließen (werden ignoriert)",
                         options=all_bots_sorted,
                         default=[b for b in detected_classic if b in all_bots_sorted],
-                        help="User-Agents, die einen dieser Begriffe enthalten (Case-insensitive), werden ausgeschlossen."
                     )
-                    st.session_state.llm_bot_custom_include = st.text_input(
-                        "Freie Muster zum Einschließen (kommagetrennt)", value="",
-                        help="Zusätzliche Suchbegriffe, die im User-Agent enthalten sein müssen (ODER-Bedingung)."
-                    )
-                    st.session_state.llm_bot_custom_exclude = st.text_input(
-                        "Freie Muster zum Ausschließen (kommagetrennt)", value="",
-                        help="Zusätzliche Suchbegriffe, die im User-Agent ausgeschlossen werden sollen (ODER-Bedingung)."
-                    )
+                    st.session_state.llm_bot_custom_include = st.text_input("Freie Muster zum Einschließen (kommagetrennt)", value="")
+                    st.session_state.llm_bot_custom_exclude = st.text_input("Freie Muster zum Ausschließen (kommagetrennt)", value="")
                 else:
                     st.warning("Keine erkennbaren Bot-Muster in den User-Agents gefunden. Du kannst unten Freitext-Muster verwenden.")
 
 # Embeddings
 if active.get("offtopic"):
-    st.markdown("**Embeddings — erwartet:** `URL` (Alias inkl. `Address`), `embedding` (JSON-Liste oder Zahlen-Sequenz). Fehlende Embeddings ⇒ Outlier (< τ).")
+    st.markdown("**Embeddings — erwartet:** `URL`, `embedding` (JSON-Liste oder Zahlen-Sequenz). Fehlende Embeddings ⇒ Outlier (< τ).")
     store_upload("emb", st.file_uploader("Embeddings-Datei (CSV/XLSX)", type=["csv","xlsx"], key="upl_emb"))
 
 # Revenue
@@ -704,27 +688,20 @@ if active.get("priority"):
     st.markdown("**Strategische Priorität — erwartet (optional):** `URL`, `priority_factor` (0.5–2.0).")
     store_upload("prio", st.file_uploader("Priorität (optional)", type=["csv","xlsx"], key="upl_prio"))
 
-# Hauptkeyword (für beide Teil-Kriterien)
+# Hauptkeyword
 if active.get("main_kw_exp") or active.get("main_kw_sv"):
-    st.markdown("**Hauptkeyword-Potenzial — erwartet:** `URL`, `main_keyword` **und** je nach Kriterium:")
-    st.markdown("- Für **Expected Clicks**: Spalte `expected_clicks` **oder** `search_volume` + `position` (wir berechnen dann `expected_clicks = SV × CTR(Position)`).")
-    st.markdown("- Für **Suchvolumen**: Spalte `search_volume`.")
+    st.markdown("**Hauptkeyword-Potenzial — erwartet:** `URL`, `main_keyword` + je nach Kriterium weitere Spalten.")
     store_upload("main_kw", st.file_uploader("Hauptkeyword-Mapping (CSV/XLSX)", type=["csv","xlsx"], key="upl_main_kw"))
 
-# ---------- (Re)build schema index after uploads changed ----------
+# ---------- (Re)build schema index ----------
 build_schema_index()
 
 # ============= Master URL list builder =============
 st.subheader("Master-URL-Liste")
-st.markdown(
-    """
-Wähle, wie die Masterliste gebildet wird. **Union** ist Standard.
-
-Die **Master-URL-Liste** ist die zentrale Ausgangsliste aller URLs, die das Scoreboard überhaupt bewertet.  
-Alle Kriterien (Clicks, Backlinks, Umsatz, etc.) werden **an diese Liste joined**.  
-Nur URLs, die in der Masterliste stehen, erhalten am Ende einen Score und erscheinen im Ergebnis/Export.
-"""
-)
+st.markdown("""
+Die **Master-URL-Liste** ist die zentrale Ausgangsliste aller URLs, die bewertet werden. 
+Alle Kriterien werden an diese Liste gejoined. Nur dort enthaltene URLs bekommen am Ende einen Score.
+""")
 
 master_mode = st.radio(
     "Masterlisten-Modus",
@@ -736,13 +713,6 @@ master_mode = st.radio(
         "Schnittmenge (alle Uploads)"
     ],
     index=0,
-    help=(
-        "**Union:** Alle URLs aus allen Uploads (Duplikate entfernt). "
-        "**Eigene Masterliste:** externe Datei mit URL-Spalte. "
-        "**Merge aus bis zu zwei Dateien:** Masterliste aus 1–2 ausgewählten Uploads. "
-        "**Aus einer bestimmten Datei wählen:** Nur URLs aus genau einem Upload. "
-        "**Schnittmenge:** Nur URLs, die in *allen* Uploads mit URL-Spalte vorkommen."
-    )
 )
 
 master_urls: Optional[pd.DataFrame] = None
@@ -786,7 +756,6 @@ def collect_urls_intersection_all_uploads() -> Optional[pd.DataFrame]:
 
 if master_mode == "Union (alle Uploads) [Default]":
     master_urls = collect_urls_union()
-
 elif master_mode == "Eigene Masterliste hochladen":
     mf = st.file_uploader("Eigene Masterliste (Spalte: url/page/page_url/address/...)", type=["csv","xlsx"], key="upl_master")
     if mf:
@@ -795,7 +764,6 @@ elif master_mode == "Eigene Masterliste hochladen":
         url_col = find_first_alias(dfm, "url") or st.selectbox("URL-Spalte in Masterliste wählen", dfm.columns, key="map_master_url")
         dfm = ensure_url_column(dfm, url_col)
         master_urls = dfm[[url_col]].rename(columns={url_col: "url_norm"}).drop_duplicates()
-
 elif master_mode == "Merge aus bis zu zwei Dateien":
     available = list(st.session_state.uploads.keys())
     pick1 = st.selectbox("Quelle 1", options=[None] + available, index=0, key="master_src1")
@@ -803,17 +771,14 @@ elif master_mode == "Merge aus bis zu zwei Dateien":
     if pick1:
         keys = [pick1] + ([pick2] if pick2 else [])
         master_urls = collect_urls_union(include_keys=keys)
-
 elif master_mode == "Aus einer bestimmten Datei wählen":
     available = list(st.session_state.uploads.keys())
     pick = st.selectbox("Datei auswählen", options=[None] + available, index=0, key="master_src_single")
     if pick:
         master_urls = collect_urls_from_key(pick)
-
 elif master_mode == "Schnittmenge (alle Uploads)":
     master_urls = collect_urls_intersection_all_uploads()
 
-# Ergebnis der Masterliste anzeigen
 if master_urls is None or master_urls.empty:
     if master_mode == "Schnittmenge (alle Uploads)":
         st.warning("Schnittmenge leer – keine URL kommt in **allen** Uploads vor. Prüfe Uploads & URL-Spalten.")
@@ -833,7 +798,7 @@ def join_on_master(df: pd.DataFrame, url_col: str, val_cols: List[str]) -> pd.Da
 results: Dict[str, pd.Series] = {}
 debug_cols: Dict[str, Dict[str, pd.Series]] = {}
 
-# --- Search Console (Clicks / Impressions) — Query-Level Aggregation ---
+# Search Console
 if active.get("sc_clicks") or active.get("sc_impr"):
     need_cols = ["url"] + (["clicks"] if active.get("sc_clicks") else []) + (["impressions"] if active.get("sc_impr") else [])
     found = find_df_with_targets(need_cols, prefer_keys=["sc"], use_autodiscovery=use_autodiscovery)
@@ -844,7 +809,7 @@ if active.get("sc_clicks") or active.get("sc_impr"):
         metrics = []
         if active.get("sc_clicks"): metrics.append(colmap["clicks"])
         if active.get("sc_impr"):  metrics.append(colmap["impressions"])
-        for m in metrics: df_sc[m] = pd.to_numeric(df_sc[m], errors="coerce").fillna(0)
+        for m in metrics: df_sc[m] = to_numeric_smart(df_sc[m]).fillna(0)
         agg_sc = df_sc.groupby(urlc, as_index=False)[metrics].sum()
         scj = join_on_master(agg_sc, urlc, metrics)
         if active.get("sc_clicks"):
@@ -857,7 +822,7 @@ if active.get("sc_clicks") or active.get("sc_impr"):
         if active.get("sc_clicks"): results["sc_clicks"] = pd.Series(0.0, index=master_urls.index)
         if active.get("sc_impr"):  results["sc_impr"]  = pd.Series(0.0, index=master_urls.index)
 
-# --- OTV (URL-Value bevorzugt, sonst Keyword-basiert) ---
+# OTV
 if active.get("otv"):
     raw_val = None
     found_url = find_df_with_targets(["url"], prefer_keys=["otv_url"], use_autodiscovery=use_autodiscovery)
@@ -871,11 +836,11 @@ if active.get("otv"):
         if keep_cols:
             d = join_on_master(df_u, urlc, keep_cols)
             if val_col is not None:
-                raw_val = pd.to_numeric(d[val_col], errors="coerce")
+                raw_val = to_numeric_smart(d[val_col])
             elif pot_col is not None and cpc_col is not None:
-                raw_val = pd.to_numeric(d[pot_col], errors="coerce") * pd.to_numeric(d[cpc_col], errors="coerce")
+                raw_val = to_numeric_smart(d[pot_col]) * to_numeric_smart(d[cpc_col])
             elif pot_col is not None:
-                raw_val = pd.to_numeric(d[pot_col], errors="coerce")
+                raw_val = to_numeric_smart(d[pot_col])
     if raw_val is None:
         found_kw = find_df_with_targets(["keyword","url","position","search_volume"], prefer_keys=["otv_kw"], use_autodiscovery=use_autodiscovery)
         if found_kw and master_urls is not None:
@@ -890,8 +855,8 @@ if active.get("otv"):
                 ctr_df = default_ctr_curve()
             df_k = ensure_url_column(df_k, urlc)
             ctrs = df_k[posc].map(lambda p: get_ctr_for_pos(p, ctr_df))
-            pot_traffic = pd.to_numeric(df_k[svc], errors="coerce").fillna(0) * ctrs
-            raw_row_val = pot_traffic * pd.to_numeric(df_k[cpcc], errors="coerce").fillna(0) if cpcc else pot_traffic
+            pot_traffic = to_numeric_smart(df_k[svc]).fillna(0) * ctrs
+            raw_row_val = pot_traffic * to_numeric_smart(df_k[cpcc]).fillna(0) if cpcc else pot_traffic
             agg = df_k.assign(_val=raw_row_val).groupby(urlc, as_index=False)["_val"].sum()
             d = master_urls.merge(agg, left_on="url_norm", right_on=urlc, how="left")
             raw_val = d["_val"]
@@ -899,7 +864,7 @@ if active.get("otv"):
         results["otv"] = pd.Series(0.0, index=master_urls.index) if raw_val is None else mode_score(raw_val).fillna(0.0)
         if raw_val is not None: debug_cols["otv"] = {"otv_raw": raw_val}
 
-# --- External popularity (Backlinks & RD) ---
+# External popularity
 if active.get("ext_pop"):
     found = find_df_with_targets(["url","backlinks","ref_domains"], prefer_keys=["ext"], use_autodiscovery=use_autodiscovery)
     if found and master_urls is not None:
@@ -911,7 +876,7 @@ if active.get("ext_pop"):
     elif master_urls is not None:
         results["ext_pop"] = pd.Series(0.0, index=master_urls.index)
 
-# --- Internal popularity (Unique Inlinks) ---
+# Internal popularity
 if active.get("int_pop"):
     found = find_df_with_targets(["url","unique_inlinks"], prefer_keys=["int"], use_autodiscovery=use_autodiscovery)
     if not found:
@@ -919,10 +884,7 @@ if active.get("int_pop"):
         if found_edges:
             _, df_edges, cm_edges = found_edges
             urlc = cm_edges["url"]
-            src_candidates = [
-                "source","from","src","source_url","referrer","referrer_url",
-                "origin","origin_url","quelle","von","inlink_source","inlink_from"
-            ]
+            src_candidates = ["source","from","src","source_url","referrer","referrer_url","origin","origin_url","quelle","von","inlink_source","inlink_from"]
             src = next((c for c in src_candidates if c in df_edges.columns and c != urlc), None)
             if src:
                 df_tmp = ensure_url_column(df_edges[[urlc, src]].copy(), urlc)
@@ -938,13 +900,13 @@ if active.get("int_pop"):
     if found and master_urls is not None:
         _, df_i, cm = found
         d = join_on_master(df_i, cm["url"], [cm["unique_inlinks"]])
-        vals = pd.to_numeric(d[cm["unique_inlinks"]], errors="coerce").clip(lower=0)
+        vals = to_numeric_smart(d[cm["unique_inlinks"]]).clip(lower=0)
         results["int_pop"] = mode_score(vals).fillna(0.0)
         debug_cols["int_pop"] = {"unique_inlinks_raw": vals}
     elif master_urls is not None:
         results["int_pop"] = pd.Series(0.0, index=master_urls.index)
 
-# --- LLM Referral ---
+# LLM Referral
 if active.get("llm_ref"):
     found = find_df_with_targets(["url","llm_ref_traffic"], prefer_keys=["llmref"], use_autodiscovery=use_autodiscovery)
     if found and master_urls is not None:
@@ -955,7 +917,7 @@ if active.get("llm_ref"):
     elif master_urls is not None:
         results["llm_ref"] = pd.Series(0.0, index=master_urls.index)
 
-# === LLM Crawl (Berechnung) ===
+# LLM Crawl
 def _contains_any(s: str, needles: List[str]) -> bool:
     s = s or ""
     l = s.lower()
@@ -964,7 +926,6 @@ def _contains_any(s: str, needles: List[str]) -> bool:
 if active.get("llm_crawl"):
     found = None
 
-    # Aggregiertes Format (mehrere Bot-Spalten)
     if "llmcrawl" in st.session_state.uploads and st.session_state.get("llm_crawl_mode") == "aggregated":
         df_aggr, _ = st.session_state.uploads["llmcrawl"]
         urlc = find_first_alias(df_aggr, "url")
@@ -972,16 +933,13 @@ if active.get("llm_crawl"):
         if urlc and sel_cols and master_urls is not None:
             df_aggr = ensure_url_column(df_aggr, urlc).copy()
             for c in sel_cols:
-                df_aggr[c] = pd.to_numeric(df_aggr[c], errors="coerce").fillna(0)
+                df_aggr[c] = to_numeric_smart(df_aggr[c]).fillna(0)
             df_aggr["_llm_crawl_freq"] = df_aggr[sel_cols].sum(axis=1)
-            agg = df_aggr.groupby(urlc, as_index=False)["_llm_crawl_freq"].sum().rename(
-                columns={"_llm_crawl_freq": "llm_crawl_freq"}
-            )
+            agg = df_aggr.groupby(urlc, as_index=False)["_llm_crawl_freq"].sum().rename(columns={"_llm_crawl_freq": "llm_crawl_freq"})
             found = ("llmcrawl_aggr", agg, {"url": urlc, "llm_crawl_freq": "llm_crawl_freq"})
         else:
             found = None
 
-    # Fallback: Logfile-Format mit User-Agent
     if found is None:
         found = find_df_with_targets(["url","llm_crawl_freq"], prefer_keys=["llmcrawl"], use_autodiscovery=use_autodiscovery)
         if not found:
@@ -999,9 +957,7 @@ if active.get("llm_crawl"):
                 custom_inc = [s.strip() for s in (st.session_state.llm_bot_custom_include or "").split(",") if s.strip()]
                 custom_exc = [s.strip() for s in (st.session_state.llm_bot_custom_exclude or "").split(",") if s.strip()]
 
-                include_needles = include_from_ui + custom_inc
-                if not include_needles:
-                    include_needles = INCLUDE_AI_BOTS[:]
+                include_needles = include_from_ui + custom_inc or INCLUDE_AI_BOTS[:]
                 exclude_needles = list(set((exclude_from_ui + custom_exc) + EXCLUDE_CLASSIC_BOTS))
 
                 mask_inc = df_log[uac].astype(str).map(lambda s: _contains_any(s, include_needles))
@@ -1011,7 +967,7 @@ if active.get("llm_crawl"):
                 df_sel = df_log.loc[mask, [urlc] + ([sess_col] if has_amount else [])].copy()
                 if not df_sel.empty:
                     if has_amount:
-                        df_sel[sess_col] = pd.to_numeric(df_sel[sess_col], errors="coerce").fillna(0)
+                        df_sel[sess_col] = to_numeric_smart(df_sel[sess_col]).fillna(0)
                         agg = df_sel.groupby(urlc, as_index=False)[sess_col].sum().rename(columns={sess_col: "llm_crawl_freq"})
                     else:
                         agg = df_sel.groupby(urlc, as_index=False).size().rename(columns={"size": "llm_crawl_freq"})
@@ -1019,16 +975,15 @@ if active.get("llm_crawl"):
                 else:
                     found = None
 
-    # Join + Score
     if found and master_urls is not None:
         _, df_lc, cm = found
         d = join_on_master(df_lc, cm["url"], [cm["llm_crawl_freq"]])
         results["llm_crawl"] = mode_score(d[cm["llm_crawl_freq"]]).fillna(0.0)
-        debug_cols["llm_crawl"] = {"llm_crawl_freq_raw": pd.to_numeric(d[cm["llm_crawl_freq"]], errors="coerce")}
+        debug_cols["llm_crawl"] = {"llm_crawl_freq_raw": to_numeric_smart(d[cm["llm_crawl_freq"]])}
     elif master_urls is not None:
         results["llm_crawl"] = pd.Series(0.0, index=master_urls.index)
 
-# --- Offtopic (0/1) — robust gegen fehlende/uneinheitliche Embeddings ---
+# Offtopic
 if active.get("offtopic"):
     found = find_df_with_targets(["url","embedding"], prefer_keys=["emb"], use_autodiscovery=use_autodiscovery)
     if found and master_urls is not None:
@@ -1076,13 +1031,10 @@ if active.get("offtopic"):
                 debug_cols["offtopic"] = {"similarity": pd.Series([np.nan]*len(master_urls))}
             else:
                 mat = np.vstack(valid["_vec2"].values)
-
-                # Robuster Centroid: Vektoren nach Norm beschneiden (5.–95. Perzentil)
                 norms = np.linalg.norm(mat, axis=1)
                 p5, p95 = np.percentile(norms, [5, 95])
                 keep_mask = (norms >= p5) & (norms <= p95)
                 mat_robust = mat[keep_mask] if keep_mask.any() else mat
-
                 centroid = mat_robust.mean(axis=0)
 
                 def cos_sim(vec):
@@ -1091,24 +1043,19 @@ if active.get("offtopic"):
 
                 valid.loc[:, "_sim"] = valid["_vec2"].map(cos_sim)
                 d = master_urls.merge(valid[[urlc,"_sim"]], left_on="url_norm", right_on=urlc, how="left")
-                sim = d["_sim"].fillna(-1.0)  # fehlend ⇒ sicher < τ
+                sim = d["_sim"].fillna(-1.0)
                 results["offtopic"] = pd.Series((sim >= st.session_state.get("offtopic_tau", 0.5)).astype(float))
                 debug_cols["offtopic"] = {"similarity": sim}
     elif master_urls is not None:
         results["offtopic"] = pd.Series(0.0, index=master_urls.index)
 
-# τ-Slider für Offtopic (nach Berechnung setzen/überschreiben)
 if active.get("offtopic") and "offtopic" in debug_cols and "similarity" in debug_cols["offtopic"]:
-    tau = st.sidebar.slider(
-        "Offtopic-Threshold τ (Ähnlichkeit)",
-        0.0, 1.0, 0.5, 0.01,
-        help="Binäres Gate im Offtopic-Kriterium: Cosine-Similarity ≥ τ ⇒ 1.0, sonst 0.0. Fehlende Embeddings zählen als < τ."
-    )
+    tau = st.sidebar.slider("Offtopic-Threshold τ (Ähnlichkeit)", 0.0, 1.0, 0.5, 0.01)
     st.session_state["offtopic_tau"] = tau
     sim = debug_cols["offtopic"]["similarity"]
     results["offtopic"] = pd.Series((sim >= tau).astype(float))
 
-# --- Revenue ---
+# Revenue
 if active.get("revenue"):
     found = find_df_with_targets(["url","revenue"], prefer_keys=["rev"], use_autodiscovery=use_autodiscovery)
     if found and master_urls is not None:
@@ -1119,14 +1066,14 @@ if active.get("revenue"):
     elif master_urls is not None:
         results["revenue"] = pd.Series(0.0, index=master_urls.index)
 
-# --- SEO Efficiency (Top-5 share) ---
+# SEO Efficiency
 if active.get("seo_eff"):
     found = find_df_with_targets(["keyword","url","position"], prefer_keys=["eff_kw"], use_autodiscovery=use_autodiscovery)
     if found and master_urls is not None:
         _, df_e, cm = found
         urlc, posc = cm["url"], cm["position"]
         df_e = ensure_url_column(df_e, urlc)
-        grp = df_e.groupby(urlc)[posc].apply(lambda s: (pd.to_numeric(s, errors="coerce") <= 5).sum() / max(1, s.shape[0]))
+        grp = df_e.groupby(urlc)[posc].apply(lambda s: (to_numeric_smart(s) <= 5).sum() / max(1, s.shape[0]))
         d = master_urls.merge(grp.rename("eff"), left_on="url_norm", right_index=True, how="left")
         eff_series = d["eff"].fillna(0.0)
         results["seo_eff"] = mode_score(eff_series).fillna(0.0)
@@ -1134,34 +1081,31 @@ if active.get("seo_eff"):
     elif master_urls is not None:
         results["seo_eff"] = pd.Series(0.0, index=master_urls.index)
 
-# --- Priority override ---
+# Priority override
 priority_url = None
 if active.get("priority"):
     found = find_df_with_targets(["url","priority_factor"], prefer_keys=["prio"], use_autodiscovery=use_autodiscovery)
     if found and master_urls is not None:
         _, df_p, cm = found
         d = join_on_master(df_p, cm["url"], [cm["priority_factor"]])
-        # 0.5–2.0 gemäß Beschreibung, Standard 1.0
-        pf = pd.to_numeric(d[cm["priority_factor"]], errors="coerce").fillna(1.0)
+        pf = to_numeric_smart(d[cm["priority_factor"]]).fillna(1.0)
         priority_url = pf.clip(lower=0.5, upper=2.0)
     elif master_urls is not None:
         priority_url = pd.Series(1.0, index=master_urls.index)
 
-# --- Hauptkeyword-Potenzial (Expected Clicks) ---
+# Hauptkeyword Expected Clicks
 if active.get("main_kw_exp"):
     found_any = find_df_with_targets(["url","main_keyword"], prefer_keys=["main_kw"], use_autodiscovery=use_autodiscovery)
     if found_any and master_urls is not None:
         _, df_m, cm = found_any
         urlc = cm["url"]
-        # Variante 1: fertige expected_clicks Spalte
         expc = find_first_alias(df_m, "expected_clicks")
         if expc:
             j = join_on_master(df_m, urlc, [cm["main_keyword"], expc])
-            vals = pd.to_numeric(j[expc], errors="coerce")
+            vals = to_numeric_smart(j[expc])
             results["main_kw_exp"] = mode_score(vals).fillna(0.0)
             debug_cols["main_kw_exp"] = {"main_keyword": j[cm["main_keyword"]], "expected_clicks_raw": j[expc]}
         else:
-            # Variante 2: compute expected_clicks = SV × CTR(position)
             svc = find_first_alias(df_m, "search_volume")
             posc = find_first_alias(df_m, "position")
             if svc and posc:
@@ -1173,7 +1117,7 @@ if active.get("main_kw_exp"):
                     ctr_df = default_ctr_curve()
                 df_m = ensure_url_column(df_m, urlc)
                 ctrs = df_m[posc].map(lambda p: get_ctr_for_pos(p, ctr_df))
-                exp_calc = pd.to_numeric(df_m[svc], errors="coerce").fillna(0) * ctrs
+                exp_calc = to_numeric_smart(df_m[svc]).fillna(0) * ctrs
                 agg = df_m.assign(_exp=exp_calc).groupby(urlc, as_index=False)["_exp"].sum()
                 j = master_urls.merge(agg, left_on="url_norm", right_on=urlc, how="left")
                 vals = j["_exp"]
@@ -1184,7 +1128,7 @@ if active.get("main_kw_exp"):
     elif master_urls is not None:
         results["main_kw_exp"] = pd.Series(0.0, index=master_urls.index)
 
-# --- Hauptkeyword-Potenzial (Suchvolumen) ---
+# Hauptkeyword Suchvolumen
 if active.get("main_kw_sv"):
     found_any = find_df_with_targets(["url","main_keyword"], prefer_keys=["main_kw"], use_autodiscovery=use_autodiscovery)
     if found_any and master_urls is not None:
@@ -1193,7 +1137,7 @@ if active.get("main_kw_sv"):
         svc = find_first_alias(df_m, "search_volume")
         if svc:
             j = join_on_master(df_m, urlc, [cm["main_keyword"], svc])
-            vals = pd.to_numeric(j[svc], errors="coerce")
+            vals = to_numeric_smart(j[svc])
             results["main_kw_sv"] = mode_score(vals).fillna(0.0)
             debug_cols["main_kw_sv"] = {"main_keyword": j[cm["main_keyword"]], "search_volume_raw": j[svc]}
         else:
@@ -1206,22 +1150,18 @@ st.subheader("Gewichtung der aktiven Kriterien")
 weight_keys = [k for k in [
     "sc_clicks","sc_impr","seo_eff","main_kw_sv","main_kw_exp",
     "ext_pop","int_pop","llm_ref","llm_crawl",
-    "otv","revenue",
-    "offtopic",
+    "otv","revenue","offtopic",
 ] if active.get(k)]
-# priority ist ein Multiplikator, kein gewichtetes Kriterium → separate Behandlung
 
 weights: Dict[str, float] = {}
 if weight_keys:
     cols = st.columns(len(weight_keys))
     for i, k in enumerate(weight_keys):
-        # Label lookup aus Gruppen
         label = None
         for _, crits in CRITERIA_GROUPS.items():
             for code, l, _ in crits:
                 if code == k:
-                    label = l
-                    break
+                    label = l; break
             if label: break
         weights[k] = cols[i].number_input(f"Gewicht: {label}", min_value=0.0, value=1.0, step=0.1, key=f"w_{k}")
 else:
@@ -1240,7 +1180,6 @@ if master_urls is not None and weight_keys:
         base += wn * df_out[f"score__{k}"].values
     df_out["base_score"] = base
 
-    # Strategische Priorität (per-URL) — optional
     if active.get("priority"):
         if 'priority_url' in locals() and priority_url is not None:
             df_out["priority_factor_url"] = priority_url.values
@@ -1256,13 +1195,12 @@ if master_urls is not None and weight_keys:
     st.subheader("Ergebnis")
     st.dataframe(df_out.head(100), use_container_width=True, hide_index=True)
 
-    # Export
     st.markdown("### Export")
     csv_bytes = df_out.to_csv(index=False).encode("utf-8-sig")
     st.download_button("⬇️ CSV herunterladen", data=csv_bytes, file_name="one_url_scoreboard.csv", mime="text/csv")
 
     try:
-        import xlsxwriter  # optional
+        import xlsxwriter
         buf = io.BytesIO()
         with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
             df_out.to_excel(writer, index=False, sheet_name="scores")
@@ -1292,7 +1230,7 @@ if master_urls is not None and weight_keys:
             "custom_include": st.session_state.llm_bot_custom_include,
             "custom_exclude": st.session_state.llm_bot_custom_exclude,
         },
-        "notes": "Masterliste: Union / Eigene / Merge(1-2) / Eine Datei / Schnittmenge. All-Inlinks in Union enthalten. SC Query→URL aggregiert. Embeddings robust. CSV-Repair aktiv (1-Spalten-Files). LLM-Crawl: Aggregat (Spaltenauswahl) oder Logfile (UA-Filter). main_kw_exp direkt oder via SV×CTR.",
+        "notes": "Masterliste & Scoring-Setup siehe UI. CSV robust: Trenner-/Encoding-Heuristik, Komma-Dezimale, Header-Fix.",
     }
     st.download_button("⬇️ Config (JSON)",
         data=json.dumps(config, indent=2).encode("utf-8"),
