@@ -484,78 +484,95 @@ if active.get("llm_ref"):
     st.markdown("**LLM Referrals — erwartet:** **genau zwei Spalten**: `URL`, `Sitzungen / LLM-Traffic` (Alias: sessions/sitzungen/visits/hits/traffic).")
     store_upload("llmref", st.file_uploader("LLM-Referrals (CSV/XLSX)", type=["csv","xlsx"], key="upl_llmref"))
 
-# LLM Crawl (inkl. Bot-Auswahl-UI)
+# === LLM Crawl (aggregiert ODER Logfile) — Upload + Bot-Auswahl-UI ===
 if active.get("llm_crawl"):
     st.markdown("**LLM Crawler Frequenz — erwartet:**")
-    st.markdown("- **Variante A (aggregiert):** `URL`, `llm_crawl_freq`.")
-    st.markdown("- **Variante B (Logfile):** `URL`, `user_agent` (+ optional `sessions/visits/hits/requests`). Klassische Bots (Googlebot, Googlebot Smartphone, Bingbot, Yandex, Baidu) **werden ausgeschlossen**.")
-    store_upload("llmcrawl", st.file_uploader("LLM-Crawl (CSV/XLSX)", type=["csv","xlsx"], key="upl_llmcrawl"))
+    st.markdown("- **Variante A (aggregiert):** `URL` + eine oder mehrere Spalten mit Bot-Besuchen (z. B. `GPTBot`, `ClaudeBot`, `PerplexityBot`, `OAI-SearchBot`, …).")
+    st.markdown("- **Variante B (Logfile):** `URL`, `user_agent` (+ optional `sessions/visits/hits/requests`). Klassische Bots (Googlebot, Bingbot, Yandex, Baidu) sind exkludiert.")
+    store_upload("llmcrawl", st.file_uploader("LLM-Crawl (CSV/XLSX)", type=["csv", "xlsx"], key="upl_llmcrawl"))
+
+    # State für Modus & Auswahl initialisieren
+    st.session_state.setdefault("llm_crawl_mode", None)
+    st.session_state.setdefault("llm_bot_column_choices", [])
 
     if "llmcrawl" in st.session_state.uploads:
         df_llm, _ = st.session_state.uploads["llmcrawl"]
-        ua_col = find_first_alias(df_llm, "user_agent")
+        cols = list(df_llm.columns)
         url_col = find_first_alias(df_llm, "url")
-        if ua_col and url_col:
-            uas = df_llm[ua_col].astype(str).fillna("")
-            bot_counts: Dict[str, int] = {}
+        ua_col  = find_first_alias(df_llm, "user_agent")
 
-            def label_for_ua(s: str) -> Optional[str]:
-                s_l = s.lower()
-                for token in EXCLUDE_CLASSIC_BOTS:
-                    if token in s_l: return token
-                for token in INCLUDE_AI_BOTS:
-                    if token in s_l: return token
-                for token in GENERIC_BOT_TOKENS:
-                    if token in s_l: return token
-                return None
+        # Modus bestimmen: wenn 'user_agent' existiert => Logfile, sonst Aggregat
+        mode = "log" if ua_col else "aggregated"
+        st.session_state["llm_crawl_mode"] = mode
 
-            for ua in uas:
-                lab = label_for_ua(ua)
-                if lab:
-                    bot_counts[lab] = bot_counts.get(lab, 0) + 1
+        if url_col is None:
+            st.error("Konnte keine URL-Spalte erkennen. Bitte prüfe die Datei (Header `URL`).")
+        else:
+            if mode == "aggregated":
+                # Spalten-Kandidaten ermitteln: numerisch, keine klassischen Summen-/Meta-/Bot-Gesamtspalten
+                classic_bot_cols = {
+                    "googlebot", "googlebot_smartphone", "bingbot", "yandex", "baidu",
+                }
+                ignore_cols_exact = {"alle_bots", "gesamt", "total", "summe", "sum", "events", "anzahl_ereignisse"}
+                ignore_like_tokens = {"co2", "antwortzeit", "response", "ms"}
 
-            st.session_state.llm_bot_detected = bot_counts
+                def is_numeric_series(s: pd.Series) -> bool:
+                    try:
+                        pd.to_numeric(s, errors="coerce")
+                        return True
+                    except Exception:
+                        return False
 
-            if bot_counts:
-                st.markdown("##### Erkannte Bots (aus User-Agent):")
-                detected_ai = [b for b in bot_counts if b in INCLUDE_AI_BOTS]
-                detected_classic = [b for b in bot_counts if b in EXCLUDE_CLASSIC_BOTS]
-                other_bots = [b for b in bot_counts if b not in detected_ai + detected_classic]
+                cand_cols = []
+                for c in cols:
+                    if c == url_col:
+                        continue
+                    cl = c.lower()
+                    if cl in ignore_cols_exact:
+                        continue
+                    if any(tok in cl for tok in ignore_like_tokens):
+                        continue
+                    if cl in classic_bot_cols:
+                        continue
+                    # nur numerische Spalten zulassen
+                    if is_numeric_series(df_llm[c]):
+                        cand_cols.append(c)
 
-                cols = st.columns(3)
-                with cols[0]:
-                    st.write("**AI/LLM (empfohlen einschließen)**")
-                    st.write(", ".join(f"{b} ({bot_counts[b]})" for b in detected_ai) or "—")
-                with cols[1]:
-                    st.write("**Klassisch (empfohlen ausschließen)**")
-                    st.write(", ".join(f"{b} ({bot_counts[b]})" for b in detected_classic) or "—")
-                with cols[2]:
-                    st.write("**Weitere Kandidaten**")
-                    st.write(", ".join(f"{b} ({bot_counts[b]})" for b in other_bots) or "—")
+                # sinnvolle Default-Auswahl: Spalten, die wie AI/LLM-Botnamen aussehen
+                ai_pref_tokens = [
+                    "gpt", "openai", "oai", "oai-searchbot", "claude", "anthropic",
+                    "perplexity", "perplexitybot", "bytespider", "ccbot", "cohere",
+                    "meta-ai", "facebook", "youbot", "duckassist", "kagi"
+                ]
+                default_ai = [c for c in cand_cols if any(tok in c.lower() for tok in ai_pref_tokens)]
 
-                all_bots_sorted = sorted(bot_counts.keys(), key=lambda x: (-bot_counts[x], x))
-                st.info("Wähle unten, **welche Bots zählen sollen** (inkludieren) und **welche ausgeschlossen werden**. Freitext erlaubt (kommagetrennt).")
-
-                st.session_state.llm_bot_include = st.multiselect(
-                    "Bots einschließen (werden gezählt)",
-                    options=all_bots_sorted,
-                    default=[b for b in detected_ai if b in all_bots_sorted],
-                    help="Nur User-Agents, die einen dieser Begriffe enthalten (Case-insensitive), werden gezählt."
+                st.info("Wähle, **welche Bot-Spalten** in die Berechnung einfließen sollen. "
+                        "Klassische Bots (Googlebot, Bingbot, Yandex, Baidu) werden ignoriert.")
+                st.session_state["llm_bot_column_choices"] = st.multiselect(
+                    "Bot-Spalten auswählen",
+                    options=cand_cols,
+                    default=default_ai or cand_cols,
+                    help="Nur die hier ausgewählten Spalten werden je URL aufsummiert."
                 )
-                st.session_state.llm_bot_exclude = st.multiselect(
-                    "Bots ausschließen (werden ignoriert)",
-                    options=all_bots_sorted,
-                    default=[b for b in detected_classic if b in all_bots_sorted],
-                    help="User-Agents, die einen dieser Begriffe enthalten (Case-insensitive), werden ausgeschlossen."
-                )
-                st.session_state.llm_bot_custom_include = st.text_input(
-                    "Freie Muster zum Einschließen (kommagetrennt)", value="",
-                    help="Zusätzliche Suchbegriffe, die im User-Agent enthalten sein müssen (ODER-Bedingung)."
-                )
-                st.session_state.llm_bot_custom_exclude = st.text_input(
-                    "Freie Muster zum Ausschließen (kommagetrennt)", value="",
-                    help="Zusätzliche Suchbegriffe, die im User-Agent ausgeschlossen werden sollen (ODER-Bedingung)."
-                )
+
+                # kleine Vorschau
+                if st.session_state["llm_bot_column_choices"]:
+                    tmp = df_llm.copy()
+                    tmp = ensure_url_column(tmp, url_col)
+                    for c in st.session_state["llm_bot_column_choices"]:
+                        tmp[c] = pd.to_numeric(tmp[c], errors="coerce").fillna(0)
+                    tmp["_llm_sum_preview"] = tmp[st.session_state["llm_bot_column_choices"]].sum(axis=1)
+                    prev = tmp[[url_col, "_llm_sum_preview"]].groupby(url_col, as_index=False)["_llm_sum_preview"].sum().rename(
+                        columns={url_col: "URL", "_llm_sum_preview": "LLM-Crawls (Auswahl)"}
+                    )
+                    st.dataframe(prev.head(10), use_container_width=True)
+                else:
+                    st.warning("Keine Bot-Spalten ausgewählt. Es werden 0 Besuche gezählt.")
+
+            else:
+                st.info("Logfile erkannt: Bitte unten die Bots wählen (User-Agent enthält …). "
+                        "Klassische Crawler (Googlebot, Bingbot, Yandex, Baidu) werden ausgeschlossen.")
+
 
 # Embeddings
 if active.get("offtopic"):
@@ -825,57 +842,86 @@ if active.get("llm_ref"):
     elif master_urls is not None:
         results["llm_ref"] = pd.Series(0.0, index=master_urls.index)
 
-# --- LLM Crawl (inkl. Bot-Auswahl) ---
+# === LLM Crawl (Berechnung) ===
 def _contains_any(s: str, needles: List[str]) -> bool:
     s = s or ""
     l = s.lower()
     return any(n.lower() in l for n in needles if n)
 
 if active.get("llm_crawl"):
-    found = find_df_with_targets(["url","llm_crawl_freq"], prefer_keys=["llmcrawl"], use_autodiscovery=use_autodiscovery)
-    if not found:
-        found_log = find_df_with_targets(["url","user_agent"], prefer_keys=["llmcrawl"], use_autodiscovery=use_autodiscovery)
-        if found_log:
-            _, df_log, cm = found_log
-            urlc, uac = cm["url"], cm["user_agent"]
-            df_log = ensure_url_column(df_log, urlc).copy()
+    found = None
 
-            sess_col = find_first_alias(df_log, "llm_crawl_freq")
-            has_amount = sess_col is not None and sess_col in df_log.columns
+    # Aggregiertes Format (mehrere Bot-Spalten, z. B. GPTBot / ClaudeBot / PerplexityBot / OAI-SearchBot …)
+    if "llmcrawl" in st.session_state.uploads and st.session_state.get("llm_crawl_mode") == "aggregated":
+        df_aggr, _ = st.session_state.uploads["llmcrawl"]
+        urlc = find_first_alias(df_aggr, "url")
+        sel_cols = st.session_state.get("llm_bot_column_choices", [])
+        if urlc and sel_cols and master_urls is not None:
+            df_aggr = ensure_url_column(df_aggr, urlc).copy()
+            for c in sel_cols:
+                df_aggr[c] = pd.to_numeric(df_aggr[c], errors="coerce").fillna(0)
+            df_aggr["_llm_crawl_freq"] = df_aggr[sel_cols].sum(axis=1)
+            agg = df_aggr.groupby(urlc, as_index=False)["_llm_crawl_freq"].sum().rename(
+                columns={"_llm_crawl_freq": "llm_crawl_freq"}
+            )
+            found = ("llmcrawl_aggr", agg, {"url": urlc, "llm_crawl_freq": "llm_crawl_freq"})
+        else:
+            found = None
 
-            include_from_ui = st.session_state.llm_bot_include or []
-            exclude_from_ui = st.session_state.llm_bot_exclude or []
-            custom_inc = [s.strip() for s in (st.session_state.llm_bot_custom_include or "").split(",") if s.strip()]
-            custom_exc = [s.strip() for s in (st.session_state.llm_bot_custom_exclude or "").split(",") if s.strip()]
+    # Fallback: Logfile-Format mit User-Agent
+    if found is None:
+        found = find_df_with_targets(["url","llm_crawl_freq"], prefer_keys=["llmcrawl"], use_autodiscovery=use_autodiscovery)
+        if not found:
+            found_log = find_df_with_targets(["url","user_agent"], prefer_keys=["llmcrawl"], use_autodiscovery=use_autodiscovery)
+            if found_log:
+                _, df_log, cm = found_log
+                urlc, uac = cm["url"], cm["user_agent"]
+                df_log = ensure_url_column(df_log, urlc).copy()
 
-            include_needles = include_from_ui + custom_inc
-            exclude_needles = exclude_from_ui + custom_exc
-            if not include_needles:
-                include_needles = INCLUDE_AI_BOTS[:]
-            exclude_needles = list(set((exclude_needles or []) + EXCLUDE_CLASSIC_BOTS))
+                sess_col = find_first_alias(df_log, "llm_crawl_freq")
+                has_amount = sess_col is not None and sess_col in df_log.columns
 
-            mask_inc = df_log[uac].astype(str).map(lambda s: _contains_any(s, include_needles))
-            mask_exc = df_log[uac].astype(str).map(lambda s: _contains_any(s, exclude_needles))
-            mask = mask_inc & (~mask_exc)
+                include_from_ui = st.session_state.llm_bot_include or []
+                exclude_from_ui = st.session_state.llm_bot_exclude or []
+                custom_inc = [s.strip() for s in (st.session_state.llm_bot_custom_include or "").split(",") if s.strip()]
+                custom_exc = [s.strip() for s in (st.session_state.llm_bot_custom_exclude or "").split(",") if s.strip()]
 
-            df_sel = df_log.loc[mask, [urlc] + ([sess_col] if has_amount else [])].copy()
-            if df_sel.empty:
-                found = None
-            else:
-                if has_amount:
-                    df_sel[sess_col] = pd.to_numeric(df_sel[sess_col], errors="coerce").fillna(0)
-                    agg = df_sel.groupby(urlc, as_index=False)[sess_col].sum().rename(columns={sess_col: "llm_crawl_freq"})
+                INCLUDE_AI_BOTS = [
+                    "gptbot", "openai", "oai", "oai-searchbot", "anthropic", "claude",
+                    "perplexity", "perplexitybot", "cohere", "ccbot", "bytespider",
+                    "meta-ai", "facebook ai", "youbot", "duckassist", "kagi"
+                ]
+                EXCLUDE_CLASSIC_BOTS = ["googlebot", "googlebot smartphone", "bingbot", "yandex", "baidu"]
+
+                include_needles = include_from_ui + custom_inc
+                if not include_needles:
+                    include_needles = INCLUDE_AI_BOTS[:]
+                exclude_needles = list(set((exclude_from_ui + custom_exc) + EXCLUDE_CLASSIC_BOTS))
+
+                mask_inc = df_log[uac].astype(str).map(lambda s: _contains_any(s, include_needles))
+                mask_exc = df_log[uac].astype(str).map(lambda s: _contains_any(s, exclude_needles))
+                mask = mask_inc & (~mask_exc)
+
+                df_sel = df_log.loc[mask, [urlc] + ([sess_col] if has_amount else [])].copy()
+                if not df_sel.empty:
+                    if has_amount:
+                        df_sel[sess_col] = pd.to_numeric(df_sel[sess_col], errors="coerce").fillna(0)
+                        agg = df_sel.groupby(urlc, as_index=False)[sess_col].sum().rename(columns={sess_col: "llm_crawl_freq"})
+                    else:
+                        agg = df_sel.groupby(urlc, as_index=False).size().rename(columns={"size": "llm_crawl_freq"})
+                    found = ("llmcrawl_log", agg, {"url": urlc, "llm_crawl_freq": "llm_crawl_freq"})
                 else:
-                    agg = df_sel.groupby(urlc, as_index=False).size().rename(columns={"size": "llm_crawl_freq"})
-                found = ("llmcrawl_log", agg, {"url": urlc, "llm_crawl_freq": "llm_crawl_freq"})
+                    found = None
 
+    # Join + Score
     if found and master_urls is not None:
         _, df_lc, cm = found
         d = join_on_master(df_lc, cm["url"], [cm["llm_crawl_freq"]])
         results["llm_crawl"] = mode_score(d[cm["llm_crawl_freq"]]).fillna(0.0)
-        debug_cols["llm_crawl"] = {"llm_crawl_freq_raw": d[cm["llm_crawl_freq"]]}
+        debug_cols["llm_crawl"] = {"llm_crawl_freq_raw": pd.to_numeric(d[cm["llm_crawl_freq"]], errors="coerce")}
     elif master_urls is not None:
         results["llm_crawl"] = pd.Series(0.0, index=master_urls.index)
+
 
 # --- Offtopic (0/1) — robust gegen fehlende/uneinheitliche Embeddings ---
 if active.get("offtopic"):
