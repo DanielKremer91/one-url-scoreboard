@@ -127,12 +127,80 @@ def normalize_url(u: str) -> Optional[str]:
     return s
 
 def read_table(uploaded) -> pd.DataFrame:
+    """
+    Robust CSV/Excel reader:
+    - Für CSV: Wenn nur eine Spalte vorhanden ist, wird automatisch nach , ; | oder Tab gesplittet.
+    - Erste Zeile wird IMMER als Header interpretiert.
+    - Für Excel bleibt alles unverändert.
+    """
     data = uploaded.read()
+    name = (uploaded.name or "").lower()
+
+    def _as_bytesio():
+        return io.BytesIO(data)
+
+    if name.endswith(".csv"):
+        # 1) Normales Einlesen mit Pandas (automatische Delimiter-Erkennung)
+        try:
+            df = pd.read_csv(_as_bytesio(), low_memory=False)
+        except Exception:
+            try:
+                df = pd.read_csv(_as_bytesio(), sep=None, engine="python", low_memory=False)
+            except Exception:
+                df = pd.DataFrame()
+
+        # 2) Falls nur 1 Spalte erkannt wurde → Delimiter prüfen & erneut einlesen
+        if df.shape[1] == 1:
+            for sep in [";", ",", "\t", "|"]:
+                try:
+                    df2 = pd.read_csv(_as_bytesio(), sep=sep, engine="python", low_memory=False)
+                    if df2.shape[1] > 1:
+                        df = df2
+                        break
+                except Exception:
+                    pass
+
+        # 3) Wenn immer noch nur eine Spalte da ist → manuell splitten
+        if df.shape[1] == 1:
+            col = df.columns[0]
+            s = df[col].astype(str)
+
+            # Häufigkeit der Delimiter zählen
+            counts = {
+                ";": s.str.count(";").sum(),
+                ",": s.str.count(",").sum(),
+                "\t": s.str.count("\t").sum(),
+                "|": s.str.count("|").sum(),
+            }
+            delim = max(counts, key=counts.get) if any(v > 0 for v in counts.values()) else ","
+
+            # Splitten
+            parts = s.str.split(delim, expand=True)
+            # Erste Zeile als Header interpretieren
+            if parts.shape[0] > 1:
+                header = parts.iloc[0].fillna("").astype(str).tolist()
+                parts = parts[1:].reset_index(drop=True)
+                parts.columns = [normalize_header(h) for h in header]
+            else:
+                parts.columns = [f"col_{i+1}" for i in range(parts.shape[1])]
+            df = parts
+
+        df = normalize_headers(df)
+        return df
+
+    # 4) Excel-Dateien unverändert behandeln
     try:
-        df = pd.read_csv(io.BytesIO(data), low_memory=False)
-    except Exception:
         df = pd.read_excel(io.BytesIO(data))
-    return normalize_headers(df)
+    except Exception:
+        # Wenn Excel-Parsing fehlschlägt, fallback auf CSV-Reader
+        try:
+            df = pd.read_csv(io.BytesIO(data), low_memory=False)
+        except Exception:
+            df = pd.DataFrame()
+
+    df = normalize_headers(df)
+    return df
+
 
 # ---- CSV-Compound-Fallback ("URL;RD;BL") — nur wenn keine URL-Spalte erkannt wird ----
 def try_split_compound_url_metrics(df: pd.DataFrame) -> pd.DataFrame:
