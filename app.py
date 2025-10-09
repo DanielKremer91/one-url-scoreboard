@@ -9,6 +9,7 @@ import json
 import re
 from typing import Dict, List, Optional, Tuple
 from collections import Counter
+from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode  # NEU
 
 import numpy as np
 import pandas as pd
@@ -20,7 +21,7 @@ st.markdown("""
 <style>
 .main .block-container { max-width: 100% !important; padding: 1rem 1rem 2rem !important; }
 [data-testid="stSidebar"] { min-width: 260px !important; max-width: 260px !important; }
-.reportview-container .main .block-container { max-width: 100% !important; padding: 1rem 1rem 2rem !important; }
+/* .reportview-container .main .block-container { ... }  -- veraltet, entfernt */
 </style>
 """, unsafe_allow_html=True)
 
@@ -70,7 +71,11 @@ def _reset_all_state():
 with st.sidebar:
     if st.button("🧹 Cache leeren (Uploads & Mappings)"):
         _reset_all_state()
-        st.experimental_rerun()
+        # kompatibel mit alten und neuen Streamlit-Versionen
+        if hasattr(st, "rerun"):
+            st.rerun()
+        else:
+            st.experimental_rerun()
 
 # ============= Session & Helpers =============
 if "uploads" not in st.session_state:
@@ -135,6 +140,11 @@ GENERIC_BOT_TOKENS = [
     "facebook ai", "google-extended", "openai", "anthropic", "metabot", "meta-ai", "youbot", "duckassist","oai","oai-searchbot"
 ]
 
+# ---- Normalisierungs-Helper (NEU) ----
+def _alias_norm(x: str) -> str:
+    # gleiche Simplifizierung wie bei normalize_headers()
+    return re.sub(r"[^\w]+", "", str(x).lower())
+
 def normalize_header(col: str) -> str:
     c = str(col).strip().lower()
     c = re.sub(r"[^\w]+", "_", c)
@@ -146,7 +156,43 @@ def normalize_headers(df: pd.DataFrame) -> pd.DataFrame:
     df.columns = [normalize_header(c) for c in df.columns]
     return df
 
+# ---- Tracking-Query säubern & URL robust normalisieren (NEU) ----
+def normalize_url(u: str) -> Optional[str]:
+    if not isinstance(u, str) or not u.strip():
+        return None
+    s = u.strip()
+    # Anker entfernen
+    if "#" in s:
+        s = s.split("#", 1)[0]
+    try:
+        sp = urlsplit(s)
+    except Exception:
+        return None
+    scheme = (sp.scheme or "https").lower()
+    netloc = sp.netloc.lower()
+
+    # Query filtern (utm_, gclid, ...)
+    keep_pairs = []
+    for k, v in parse_qsl(sp.query, keep_blank_values=True):
+        kl = k.lower()
+        if any(kl.startswith(pref) for pref in TRACKING_PARAMS_PREFIXES):
+            continue
+        if kl in TRACKING_PARAMS_EXACT:
+            continue
+        keep_pairs.append((k, v))
+    query = urlencode(keep_pairs, doseq=True)
+
+    # Standardports entfernen
+    if scheme == "http" and netloc.endswith(":80"):
+        netloc = netloc[:-3]
+    if scheme == "https" and netloc.endswith(":443"):
+        netloc = netloc[:-4]
+
+    # Pfad nicht lowercased (Case-Sensitivität beachten)
+    return urlunsplit((scheme, netloc, sp.path, query, "")) or None
+
 def strip_tracking_params(qs: str) -> str:
+    # legacy helper (wird nicht mehr direkt genutzt, bleibt für Kompatibilität)
     if not qs: return ""
     kept = []
     for pair in qs.split("&"):
@@ -159,16 +205,6 @@ def strip_tracking_params(qs: str) -> str:
         if kl in TRACKING_PARAMS_EXACT: continue
         kept.append(pair)
     return "&".join(kept)
-
-def normalize_url(u: str) -> Optional[str]:
-    if not isinstance(u, str) or not u.strip(): return None
-    s = u.strip().lower()
-    if "#" in s: s = s.split("#", 1)[0]
-    if "?" in s:
-        base, qs = s.split("?", 1)
-        qs2 = strip_tracking_params(qs)
-        s = base if not qs2 else f"{base}?{qs2}"
-    return s
 
 def read_table(uploaded) -> pd.DataFrame:
     """
@@ -259,11 +295,13 @@ def store_upload(key: str, file):
 
 def find_first_alias(df: pd.DataFrame, target: str) -> Optional[str]:
     candidates = ALIASES.get(target, [])
+    # direkte Treffer
     for c in candidates:
         if c in df.columns: return c
-    cols_norm = {re.sub(r"[_\s]+","", c): c for c in df.columns}
+    # normalisierte Treffer (NEU: gleiche Normalisierung wie bei Spalten)
+    cols_norm = { _alias_norm(c): c for c in df.columns }
     for c in candidates:
-        cn = re.sub(r"[_\s]+","", c)
+        cn = _alias_norm(c)
         if cn in cols_norm: return cols_norm[cn]
     # zusätzliche Heuristik für URL
     if target == "url":
@@ -357,10 +395,9 @@ def bucket_scores(series: pd.Series,
     try:
         qvals = s[mask].quantile(quantiles).values
         bins = np.unique(qvals)
+        # Fallback: wenn zu wenig unterschiedliche Quantile → rank_scores statt alle auf Top-Bucket
         if len(bins) < 3:
-            mn, mx = float(s[mask].min()), float(s[mask].max())
-            if mx <= mn: res[mask] = bucket_values[-1]; return res
-            bins = np.linspace(mn, mx + 1e-9, num=6)
+            return rank_scores(series, min_score=0.2)
         cats = pd.cut(s[mask], bins=bins, include_lowest=True, labels=False)
         bv = dict(zip(range(len(bucket_values)), bucket_values))
         res[mask] = cats.map(lambda i: bv.get(int(i), 0.0)).astype(float)
@@ -377,7 +414,8 @@ def default_ctr_curve() -> pd.DataFrame:
                          "ctr": [0.30,0.15,0.10,0.07,0.05,0.04,0.035,0.03,0.025,0.02,0.018,0.016,0.014,0.012,0.010,0.009,0.008,0.007,0.006,0.005]})
 
 def get_ctr_for_pos(pos: float, ctr_df: pd.DataFrame) -> float:
-    try: p = int(round(float(pos)))
+    # konservativer: nach oben runden statt runden → vermeidet 1↔2 Sprünge um 1.5 herum
+    try: p = int(np.ceil(float(pos)))
     except Exception: return 0.0
     p = max(1, min(p, int(ctr_df["position"].max())))
     row = ctr_df.loc[ctr_df["position"] == p]
@@ -530,7 +568,7 @@ if active.get("llm_crawl"):
 
                 def is_numeric_series(s: pd.Series) -> bool:
                     try:
-                        pd.to_numeric(s, errors="coerce")
+                        pd.to_numeric(s, errors="coerce")  # robust
                         return True
                     except Exception:
                         return False
@@ -777,7 +815,10 @@ elif master_mode == "Schnittmenge (alle Uploads)":
 
 # Ergebnis der Masterliste anzeigen
 if master_urls is None or master_urls.empty:
-    st.info("Noch keine Master-URLs erkannt. Lade mindestens eine Datei mit URL-Spalte hoch **oder** wähle eine der Masterlisten-Optionen.")
+    if master_mode == "Schnittmenge (alle Uploads)":
+        st.warning("Schnittmenge leer – keine URL kommt in **allen** Uploads vor. Prüfe Uploads & URL-Spalten.")
+    else:
+        st.info("Noch keine Master-URLs erkannt. Lade mindestens eine Datei mit URL-Spalte hoch **oder** wähle eine der Masterlisten-Optionen.")
 else:
     st.success(f"Master-URLs: {len(master_urls):,}")
 
@@ -1029,18 +1070,26 @@ if active.get("offtopic"):
                 vv = np.zeros(L, dtype=float); vv[:n] = v; return vv
 
             tmp["_vec2"] = tmp["_vec"].map(lambda v: pad_or_trunc(v, dominant_len))
-            valid = tmp[tmp["_vec2"].map(lambda v: isinstance(v, np.ndarray))]
-            mat = np.vstack(valid["_vec2"].values) if not valid.empty else None
-
-            if mat is None or mat.size == 0:
+            valid = tmp[tmp["_vec2"].map(lambda v: isinstance(v, np.ndarray))].copy()
+            if valid.empty:
                 results["offtopic"] = pd.Series(0.0, index=master_urls.index)
                 debug_cols["offtopic"] = {"similarity": pd.Series([np.nan]*len(master_urls))}
             else:
-                centroid = mat.mean(axis=0)
+                mat = np.vstack(valid["_vec2"].values)
+
+                # Robuster Centroid: Vektoren nach Norm beschneiden (5.–95. Perzentil)
+                norms = np.linalg.norm(mat, axis=1)
+                p5, p95 = np.percentile(norms, [5, 95])
+                keep_mask = (norms >= p5) & (norms <= p95)
+                mat_robust = mat[keep_mask] if keep_mask.any() else mat
+
+                centroid = mat_robust.mean(axis=0)
+
                 def cos_sim(vec):
                     a = vec/(np.linalg.norm(vec)+1e-12); b = centroid/(np.linalg.norm(centroid)+1e-12)
                     return float(np.dot(a,b))
-                valid["_sim"] = valid["_vec2"].map(cos_sim)
+
+                valid.loc[:, "_sim"] = valid["_vec2"].map(cos_sim)
                 d = master_urls.merge(valid[[urlc,"_sim"]], left_on="url_norm", right_on=urlc, how="left")
                 sim = d["_sim"].fillna(-1.0)  # fehlend ⇒ sicher < τ
                 results["offtopic"] = pd.Series((sim >= st.session_state.get("offtopic_tau", 0.5)).astype(float))
@@ -1092,11 +1141,9 @@ if active.get("priority"):
     if found and master_urls is not None:
         _, df_p, cm = found
         d = join_on_master(df_p, cm["url"], [cm["priority_factor"]])
-        priority_url = (
-            pd.to_numeric(d[cm["priority_factor"]], errors="coerce")
-            .fillna(1.0)
-            .clip(lower=1.0)  # alles unter 1.0 wird auf 1.0 gesetzt
-        )
+        # 0.5–2.0 gemäß Beschreibung, Standard 1.0
+        pf = pd.to_numeric(d[cm["priority_factor"]], errors="coerce").fillna(1.0)
+        priority_url = pf.clip(lower=0.5, upper=2.0)
     elif master_urls is not None:
         priority_url = pd.Series(1.0, index=master_urls.index)
 
