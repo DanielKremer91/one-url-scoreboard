@@ -473,7 +473,7 @@ CRITERIA_GROUPS = {
         ("main_kw_sv", "Potenzial Hauptkeyword der URL (gemessen am Suchvolumen)",
          "Je höher das Suchvolumen des Hauptkeywords für die URL, desto besser. Voraussetzung: Es kann eine Datei mit mind. URL, Hauptkeyword und Suchvolumen Hauptkeyword bereitgestellt werden."),
         ("main_kw_exp", "Potenzial Hauptkeyword der URL (gemessen an Expected Clicks)",
-         "Entweder fertiger Wert **expected_clicks** ODER Berechnung aus (Suchvolumen × CTR(Position)). Je höher der Wert, desto besser. Es kann eine Datei mit mind. URL, Hauptkeyword und expected Klicks für das Hauptkeyword bereitgestellt werden."),
+         "Entweder fertiger Wert **expected_clicks** ODER Berechnung aus (Suchvolumen × CTR(Position)). Je höher der Wert, desto besser. Voraussetzung: Es kann eine Datei mit mind. URL, Hauptkeyword und expected Klicks für das Hauptkeyword bereitgestellt werden ODER URL, Hauptkeyword und Ranking für Hauptkeyword."),
         ("llm_ref", "LLM-Referral-Traffic",
          "Erhält die URLs bereits Traffic aus LLMs? Je höher der Wert, desto besser."),
     ],
