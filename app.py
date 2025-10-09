@@ -518,11 +518,21 @@ if active.get("sc_clicks") or active.get("sc_impr"):
 if active.get("otv"):
     st.markdown("**Organic Traffic Value — erwartet:**")
     st.markdown("- **Variante A (URL-Value):** `URL`, `traffic_value` **oder** `potential_traffic_url` (+ optional `cpc`).")
-    st.markdown("- **Variante B (Keyword-basiert):** `keyword`, `URL`, `position`, `search_volume` (+ optional `cpc`). CTR-Kurve optional (`position`, `ctr`).")
-    c1, c2, c3 = st.columns(3)
-    with c1: store_upload("otv_url", st.file_uploader("OTV: URL-Value (optional)", type=["csv","xlsx"], key="upl_otv_url"))
-    with c2: store_upload("otv_kw",  st.file_uploader("OTV: Keyword-Datei (optional)", type=["csv","xlsx"], key="upl_otv_kw"))
-    with c3: store_upload("ctr_curve", st.file_uploader("CTR-Kurve (optional, genutzt auch für Expected Clicks)", type=["csv","xlsx"], key="upl_ctr"))
+    st.markdown("- **Variante B (Keyword-basiert):** `keyword`, `URL`, `position`, `search_volume` (+ optional `cpc`).")
+    c1, c2 = st.columns(2)
+    with c1:
+        store_upload("otv_url", st.file_uploader("OTV: URL-Value (optional)", type=["csv","xlsx"], key="upl_otv_url"))
+    with c2:
+        store_upload("otv_kw",  st.file_uploader("OTV: Keyword-Datei (optional)", type=["csv","xlsx"], key="upl_otv_kw"))
+
+# CTR-Kurve separat anzeigen, sobald sie irgendwo gebraucht werden könnte
+if active.get("otv") or active.get("main_kw_exp"):
+    store_upload("ctr_curve", st.file_uploader(
+        "CTR-Kurve (optional, für Expected Clicks & OTV-Keyword)",
+        type=["csv","xlsx"], key="upl_ctr"
+    ))
+    st.caption("Format: Spalten **position** (1..n) und **ctr** (0..1). Fehlende Datei ⇒ Standard-CTR.")
+
 
 if active.get("ext_pop"):
     st.markdown("**URL-Popularität extern — erwartet:** `URL`, `backlinks`, `ref_domains`.")
