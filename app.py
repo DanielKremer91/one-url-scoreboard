@@ -48,10 +48,10 @@ Fehlende Daten im **aktiven** Kriterium ⇒ Score = 0 (kein Reweighting pro URL)
 **Wichtig**
 - **Master-URL-Liste**: Modi **Union** (Voreinstellung), **Eigene Masterliste**, **Merge aus bis zu zwei Dateien**, **Basis „eine Datei“**, **Schnittmenge (alle Uploads)**.
 - **All-Inlinks-Datei** (Crawl/Kantenliste) wird **in die Union aufgenommen** (empfangende Ziel-URLs).
-- **SC-Query-Level** wird **automatisch** pro URL aggregiert.
+- **Search Console Query-Level** wird **automatisch** pro URL aggregiert.
 - **Embeddings robust**: Fehlende Embeddings ⇒ Outlier (unter τ). Uneinheitliche Längen ⇒ Padding/Trunc auf dominante Dimension.
-- **CSV-Fallback**: Falls eine Spalte „URL;RD;BL“ vorkommt, wird sie automatisch in `url`, `ref_domains`, `backlinks` gesplittet.
-- **Kein globaler Prioritätsfaktor** (kein Mehrwert). **Strategische Priorität** per URL bleibt optional.
+- **CSV-Fallback**: Falls eine Datei nur **eine** Spalte hat, wird automatisch nach `,` `;` `|` oder Tab gesplittet; **erste Zeile = Header**.
+- **Kein globaler Prioritätsfaktor**. **Strategische Priorität** per URL bleibt optional.
 """)
 
 # ============= Session & Helpers =============
@@ -61,6 +61,16 @@ if "column_maps" not in st.session_state:
     st.session_state.column_maps = {}
 if "schema_index" not in st.session_state:
     st.session_state.schema_index = {}
+if "llm_bot_detected" not in st.session_state:
+    st.session_state.llm_bot_detected = {}  # {bot_name: count}
+if "llm_bot_include" not in st.session_state:
+    st.session_state.llm_bot_include = []
+if "llm_bot_exclude" not in st.session_state:
+    st.session_state.llm_bot_exclude = []
+if "llm_bot_custom_include" not in st.session_state:
+    st.session_state.llm_bot_custom_include = ""
+if "llm_bot_custom_exclude" not in st.session_state:
+    st.session_state.llm_bot_custom_exclude = ""
 
 ALIASES = {
     # URL-Aliase erweitert: erkennt u. a. Page URL / Address
@@ -74,11 +84,15 @@ ALIASES = {
     "cpc": ["cpc","cost_per_click"],
     "traffic_value": ["traffic_value","otv","organic_traffic_value","value","potential_value"],
     "potential_traffic_url": ["potential_traffic_url","potential_traffic","pot_traffic"],
-    "backlinks": ["backlinks","links_total","bl","inbound_links"],
-    "ref_domains": ["ref_domains","referring_domains","rd","domains_ref","verweisende_domains"],
+    # extern
+    "backlinks": ["backlinks","links_total","bl","inbound_links","links_to_target"],
+    "ref_domains": ["ref_domains","referring_domains","rd","domains_ref","verweisende_domains","referring_domains"],
+    # intern
     "unique_inlinks": ["unique_inlinks","internal_inlinks","inlinks_unique","eingehenden_links","inlinks","eingehende_links","inlinks_unique_count","incoming_links_unique"],
-    "llm_ref_traffic": ["llm_ref_traffic","llm_referrals","ai_referrals","llm_popularity","llm_traffic"],
-    "llm_crawl_freq": ["llm_crawl_freq","ai_crawls","llm_crawls","llm_crawler_visits"],
+    # LLM referrals/crawl
+    "llm_ref_traffic": ["llm_ref_traffic","llm_referrals","ai_referrals","llm_popularity","llm_traffic","sessions","sitzungen","visits","hits","traffic"],
+    "llm_crawl_freq": ["llm_crawl_freq","ai_crawls","llm_crawls","llm_crawler_visits","crawls","visits","hits","requests"],
+    "user_agent": ["user_agent","ua","agent","crawler","bot","useragent"],
     "embedding": ["embedding","embeddings","vector","vec","embedding_json"],
     "revenue": ["revenue","umsatz","organic_revenue","organic_umsatz","organic_sales"],
     "priority_factor": ["priority_factor","prio","priority","override","weight_override"],
@@ -90,6 +104,22 @@ ALIASES = {
 
 TRACKING_PARAMS_PREFIXES = ["utm_", "icid_"]
 TRACKING_PARAMS_EXACT = {"gclid","fbclid","msclkid","mc_eid","yclid"}
+
+# ---- AI/LLM Bot Muster (inkludieren / exkludieren) ----
+EXCLUDE_CLASSIC_BOTS = [
+    "googlebot", "googlebot smartphone", "bingbot", "yandex", "baidu"
+]
+INCLUDE_AI_BOTS = [
+    "gptbot", "openai", "anthropic", "claudebot", "perplexitybot",
+    "perplexity", "cohere", "ccbot", "bytespider", "google-extended",
+    "meta-ai", "facebook ai", "chatgpt", "duckassist", "quorabots", "youbot"
+]
+
+GENERIC_BOT_TOKENS = [
+    # hilft bei Autodetektion aus UA-Strings
+    "bot", "ai", "gpt", "claude", "perplexity", "cohere", "bytespider", "ccbot", "facebook ai",
+    "google-extended", "openai", "anthropic", "metabot", "meta-ai", "youbot", "duckassist"
+]
 
 def normalize_header(col: str) -> str:
     c = col.strip().lower()
@@ -388,18 +418,43 @@ use_autodiscovery = st.sidebar.toggle(
 
 # ============= Kriterienauswahl (links im Hauptbereich) =============
 CRITERIA = [
-    ("sc_clicks", "SC Clicks", "Search Console Clicks."),
-    ("sc_impr",   "SC Impressions", "Search Console Impressions."),
-    ("otv",       "Organic Traffic Value", "URL-Value vorhanden ODER via Keyword × CTR."),
-    ("ext_pop",   "URL-Popularität extern", "Ref. Domains 70% + Backlinks 30%."),
-    ("int_pop",   "URL-Popularität intern", "Unique interne Inlinks (oder Kantenliste)."),
-    ("llm_ref",   "LLM-Popularität (Referrals)", "LLM/AI Referral Traffic."),
-    ("llm_crawl", "LLM-Crawl-Frequenz", "AI/LLM Crawler Visits."),
-    ("offtopic",  "Offtopic-Score (0/1)", "Cosine-Similarity Gate via τ."),
-    ("revenue",   "Umsatz", "Revenue je URL."),
-    ("seo_eff",   "URL-SEO-Effizienz", "Anteil Top-5-Keywords je URL."),
-    ("priority",  "Strategische Priorität (Override)", "Multiplikator je URL."),
-    ("main_kw",   "Hauptkeyword-Potenzial (SV/Expected Clicks)", "URL + Hauptkeyword + erwartete Klicks ODER Suchvolumen."),
+    # Search Console
+    ("sc_clicks", "Search Console Klicks",
+     "Search Console Klicks – wie viele Klicks die URL geholt hat. Gilt: je mehr, desto besser."),
+    ("sc_impr",   "Search Console Impressions",
+     "Search Console Impressions – wie oft die URL in den Suchergebnissen eingeblendet wurde. Gilt: je mehr, desto besser."),
+
+    # Value / Popularität
+    ("otv",       "Organic Traffic Value",
+     "Geschätzter organischer Traffic-Wert der URL. Entweder direkt bereitgestellt (traffic_value) oder aus Keyword-Datei via CTR-Kurve berechnet. Je höher, desto besser."),
+    ("ext_pop",   "URL-Popularität extern",
+     "Gibt an, wie viele Backlinks von wie vielen unterschiedlichen Domains die URL generiert hat. Zusammensetzung im Score: 70% Referring Domains + 30% Backlinks. Je höher, desto besser."),
+    ("int_pop",   "URL-Popularität intern",
+     "Interne Popularität: eindeutige interne Inlinks pro URL. Entweder direkt als unique_inlinks oder aus Kantenliste aggregiert. Je höher, desto besser."),
+
+    # LLM
+    ("llm_ref",   "LLM-Popularität (Referrals)",
+     "LLM/AI Referral Traffic zur URL. Je höher, desto besser."),
+    ("llm_crawl", "LLM-Crawl-Frequenz",
+     "Besuchsfrequenz von AI/LLM-Crawlern auf der URL. Entweder direkt `llm_crawl_freq` oder aus Logfile (`url` + `user_agent` + optional `sessions`) aggregiert. Klassische Bots (Googlebot, Bingbot, Yandex, Baidu) werden ausgeschlossen. Optional: manuelle Bot-Auswahl nach Upload."),
+
+    # Qualität / Wirtschaft
+    ("offtopic",  "Offtopic-Score (0/1)",
+     "Inhaltliche Nähe zum inhaltlichen Centroid (Cosine-Similarity). Gate via Threshold τ: ≥ τ = 1, sonst 0. Fehlende Embeddings gelten als < τ."),
+    ("revenue",   "Umsatz",
+     "Umsatz, der der URL zugeordnet ist. Gilt: je höher, desto besser."),
+    ("seo_eff",   "URL-SEO-Effizienz",
+     "Anteil der Keywords einer URL mit durchschnittlicher Position ≤ 5. Je höher, desto effizienter."),
+
+    # Strategie
+    ("priority",  "Strategische Priorität (Override)",
+     "Manueller Multiplikator je URL (0.5–2.0). Skaliert den finalen Score der jeweiligen URL."),
+
+    # Hauptkeyword – gesplittet in zwei Kriterien
+    ("main_kw_exp", "Hauptkeyword-Potenzial (Expected Clicks)",
+     "URL + Hauptkeyword + erwartete Klicks für das Hauptkeyword. Je mehr erwartete Klicks, desto besser."),
+    ("main_kw_sv",  "Hauptkeyword-Potenzial (Suchvolumen)",
+     "URL + Hauptkeyword + monatliches Suchvolumen des Hauptkeywords. Je höher das Suchvolumen, desto besser."),
 ]
 
 st.subheader("Kriterien auswählen")
@@ -410,10 +465,10 @@ active = {code: st.checkbox(label, value=False, help=hover, key=f"chk_{code}") f
 st.markdown("---")
 st.subheader("Basierend auf den gewählten Kriterien benötigen wir folgende Dateien")
 
-# SC
+# Search Console
 if active.get("sc_clicks") or active.get("sc_impr"):
-    st.markdown("**Search Console Organic Performance — erwartet:** `URL` (alias: url/page/page_url/address), `Clicks/Klicks`, `Impressions/Impressionen`. **Query-Ebene ist ok** – wird pro URL aggregiert.")
-    store_upload("sc", st.file_uploader("SC-Datei (CSV/XLSX)", type=["csv","xlsx"], key="upl_sc"))
+    st.markdown("**Search Console — erwartet:** `URL` (Alias: url/page/page_url/address), `Clicks/Klicks`, `Impressions/Impressionen`. **Query-Ebene ist ok** – wird pro URL aggregiert.")
+    store_upload("sc", st.file_uploader("Search Console Datei (CSV/XLSX)", type=["csv","xlsx"], key="upl_sc"))
 
 # OTV
 if active.get("otv"):
@@ -425,27 +480,106 @@ if active.get("otv"):
     with c2: store_upload("otv_kw",  st.file_uploader("OTV: Keyword-Datei (optional)", type=["csv","xlsx"], key="upl_otv_kw"))
     with c3: store_upload("ctr_curve", st.file_uploader("CTR-Kurve (optional)", type=["csv","xlsx"], key="upl_ctr"))
 
-# Extern-Pop
+# Extern-Popularität
 if active.get("ext_pop"):
-    st.markdown("**Extern-Popularität — erwartet:** `URL`, `backlinks`, `ref_domains`.")
+    st.markdown("**URL-Popularität extern — erwartet:** `URL`, `backlinks` (Alias inkl. `links_to_target`), `ref_domains` (Alias inkl. `referring_domains`).")
     store_upload("ext", st.file_uploader("Extern-Popularität (CSV/XLSX)", type=["csv","xlsx"], key="upl_ext"))
 
-# Intern-Pop
+# Intern-Popularität
 if active.get("int_pop"):
-    st.markdown("**Intern-Popularität — erwartet:**")
+    st.markdown("**URL-Popularität intern — erwartet:**")
     st.markdown("- **Variante A:** `URL`, `unique_inlinks`.")
     st.markdown("- **Variante B (Kantenliste):** `URL` (= Ziel) **und** eine Quellspalte (z. B. `source`, `source_url`, `referrer`) – wird zu `unique_inlinks` aggregiert.")
     store_upload("int", st.file_uploader("Intern-Popularität (Crawl/Inlinks)", type=["csv","xlsx"], key="upl_int"))
 
 # LLM Referral
 if active.get("llm_ref"):
-    st.markdown("**LLM Referral Traffic — erwartet:** `URL`, `llm_ref_traffic`.")
-    store_upload("llmref", st.file_uploader("LLM-Referral (CSV/XLSX)", type=["csv","xlsx"], key="upl_llmref"))
+    st.markdown("**LLM Referrals — erwartet:** **genau zwei Spalten**: `URL`, `Sitzungen / LLM-Traffic` (Alias: sessions/sitzungen/visits/hits/traffic).")
+    store_upload("llmref", st.file_uploader("LLM-Referrals (CSV/XLSX)", type=["csv","xlsx"], key="upl_llmref"))
 
 # LLM Crawl
 if active.get("llm_crawl"):
-    st.markdown("**LLM Crawler Frequenz — erwartet:** `URL`, `llm_crawl_freq`.")
+    st.markdown("**LLM Crawler Frequenz — erwartet:**")
+    st.markdown("- **Variante A (aggregiert):** `URL`, `llm_crawl_freq`.")
+    st.markdown("- **Variante B (Logfile):** `URL`, `user_agent` (+ optional `sessions/visits/hits/requests`). Klassische Bots (Googlebot, Googlebot Smartphone, Bingbot, Yandex, Baidu) **werden ausgeschlossen**.")
     store_upload("llmcrawl", st.file_uploader("LLM-Crawl (CSV/XLSX)", type=["csv","xlsx"], key="upl_llmcrawl"))
+
+    # ====== Bot-Erkennung & manuelle Auswahl (nur wenn Logfile mit UA erkennbar) ======
+    if "llmcrawl" in st.session_state.uploads:
+        df_llm, _ = st.session_state.uploads["llmcrawl"]
+        ua_col = find_first_alias(df_llm, "user_agent")
+        url_col = find_first_alias(df_llm, "url")
+        if ua_col and url_col:
+            # kleine Bot-Erkennung: mappe UA auf "Bot-Namen" Heuristik
+            uas = df_llm[ua_col].astype(str).fillna("")
+            bot_counts: Dict[str, int] = {}
+
+            def label_for_ua(s: str) -> Optional[str]:
+                s_l = s.lower()
+                # klassische Bots zuerst etikettieren (für Exclude-Vorschlag)
+                for token in EXCLUDE_CLASSIC_BOTS:
+                    if token in s_l:
+                        return token
+                # bekannte AI-Bots
+                for token in INCLUDE_AI_BOTS:
+                    if token in s_l:
+                        return token
+                # generisch: alles mit bot/ai-Token als sonstiger Kandidat
+                for token in GENERIC_BOT_TOKENS:
+                    if token in s_l:
+                        return token
+                return None
+
+            for ua in uas:
+                lab = label_for_ua(ua)
+                if lab:
+                    bot_counts[lab] = bot_counts.get(lab, 0) + 1
+
+            # im State speichern (für spätere Runs)
+            st.session_state.llm_bot_detected = bot_counts
+
+            if bot_counts:
+                st.markdown("##### Erkannte Bots (aus User-Agent):")
+                # Vorschläge vorbelegen
+                detected_ai = [b for b in bot_counts if b in INCLUDE_AI_BOTS]
+                detected_classic = [b for b in bot_counts if b in EXCLUDE_CLASSIC_BOTS]
+                other_bots = [b for b in bot_counts if b not in detected_ai + detected_classic]
+
+                cols = st.columns(3)
+                with cols[0]:
+                    st.write("**AI/LLM (empfohlen einschließen)**")
+                    st.write(", ".join(f"{b} ({bot_counts[b]})" for b in detected_ai) or "—")
+                with cols[1]:
+                    st.write("**Klassisch (empfohlen ausschließen)**")
+                    st.write(", ".join(f"{b} ({bot_counts[b]})" for b in detected_classic) or "—")
+                with cols[2]:
+                    st.write("**Weitere Kandidaten**")
+                    st.write(", ".join(f"{b} ({bot_counts[b]})" for b in other_bots) or "—")
+
+                all_bots_sorted = sorted(bot_counts.keys(), key=lambda x: (-bot_counts[x], x))
+                st.info("Wähle unten, **welche Bots zählen sollen** (inkludieren) und **welche ausgeschlossen werden**. Freitext erlaubt (kommagetrennt).")
+
+                st.session_state.llm_bot_include = st.multiselect(
+                    "Bots einschließen (werden gezählt)",
+                    options=all_bots_sorted,
+                    default=[b for b in detected_ai if b in all_bots_sorted],
+                    help="Nur User-Agents, die einen dieser Begriffe enthalten (Case-insensitive), werden gezählt."
+                )
+                st.session_state.llm_bot_exclude = st.multiselect(
+                    "Bots ausschließen (werden ignoriert)",
+                    options=all_bots_sorted,
+                    default=[b for b in detected_classic if b in all_bots_sorted],
+                    help="User-Agents, die einen dieser Begriffe enthalten (Case-insensitive), werden ausgeschlossen."
+                )
+
+                st.session_state.llm_bot_custom_include = st.text_input(
+                    "Freie Muster zum Einschließen (kommagetrennt)", value="",
+                    help="Zusätzliche Suchbegriffe, die im User-Agent enthalten sein müssen (ODER-Bedingung)."
+                )
+                st.session_state.llm_bot_custom_exclude = st.text_input(
+                    "Freie Muster zum Ausschließen (kommagetrennt)", value="",
+                    help="Zusätzliche Suchbegriffe, die im User-Agent ausgeschlossen werden sollen (ODER-Bedingung)."
+                )
 
 # Embeddings
 if active.get("offtopic"):
@@ -459,7 +593,7 @@ if active.get("revenue"):
 
 # SEO Efficiency
 if active.get("seo_eff"):
-    st.markdown("**SEO-Effizienz — erwartet:** `keyword`, `URL`, `position` (Top-5-Anteil je URL wird berechnet).")
+    st.markdown("**URL-SEO-Effizienz — erwartet:** `keyword`, `URL`, `position` (Top-5-Anteil je URL wird berechnet).")
     store_upload("eff_kw", st.file_uploader("Keyword-Datei (SEO-Effizienz)", type=["csv","xlsx"], key="upl_eff_kw"))
 
 # Priority
@@ -467,9 +601,11 @@ if active.get("priority"):
     st.markdown("**Strategische Priorität — erwartet (optional):** `URL`, `priority_factor` (0.5–2.0).")
     store_upload("prio", st.file_uploader("Priorität (optional)", type=["csv","xlsx"], key="upl_prio"))
 
-# Hauptkeyword
-if active.get("main_kw"):
-    st.markdown("**Hauptkeyword-Potenzial — erwartet:** `URL`, `main_keyword` **und** `expected_clicks` **oder** `search_volume`.")
+# Hauptkeyword (gemeinsame Datei für beide Teil-Kriterien)
+if active.get("main_kw_exp") or active.get("main_kw_sv"):
+    st.markdown("**Hauptkeyword-Potenzial — erwartet:** `URL`, `main_keyword` **und** je nach Kriterium:")
+    st.markdown("- Für **Expected Clicks**: Spalte `expected_clicks` (Alias: expected_clicks/exp_clicks/...).")
+    st.markdown("- Für **Suchvolumen**: Spalte `search_volume` (Alias: search_volume/sv/...).")
     store_upload("main_kw", st.file_uploader("Hauptkeyword-Mapping (CSV/XLSX)", type=["csv","xlsx"], key="upl_main_kw"))
 
 # ---------- (Re)build schema index after uploads changed ----------
@@ -583,7 +719,7 @@ def join_on_master(df: pd.DataFrame, url_col: str, val_cols: List[str]) -> pd.Da
 results: Dict[str, pd.Series] = {}
 debug_cols: Dict[str, Dict[str, pd.Series]] = {}
 
-# --- SC Clicks / Impressions (supports query-level rows; aggregates by URL) ---
+# --- Search Console (Clicks / Impressions) — Query-Level Aggregation ---
 if active.get("sc_clicks") or active.get("sc_impr"):
     need_cols = ["url"] + (["clicks"] if active.get("sc_clicks") else []) + (["impressions"] if active.get("sc_impr") else [])
     found = find_df_with_targets(need_cols, prefer_keys=["sc"], use_autodiscovery=use_autodiscovery)
@@ -705,9 +841,57 @@ if active.get("llm_ref"):
     elif master_urls is not None:
         results["llm_ref"] = pd.Series(0.0, index=master_urls.index)
 
-# --- LLM Crawl ---
+# --- LLM Crawl (inkl. Bot-Auswahl) ---
+def _contains_any(s: str, needles: List[str]) -> bool:
+    s = s or ""
+    l = s.lower()
+    return any(n.lower() in l for n in needles if n)
+
 if active.get("llm_crawl"):
+    # 1) Bevorzugt: direkt aggregierte Datei (url + llm_crawl_freq)
     found = find_df_with_targets(["url","llm_crawl_freq"], prefer_keys=["llmcrawl"], use_autodiscovery=use_autodiscovery)
+
+    # 2) Falls nicht vorhanden: Logfile-Variante (url + user_agent [+ sessions])
+    if not found:
+        found_log = find_df_with_targets(["url","user_agent"], prefer_keys=["llmcrawl"], use_autodiscovery=use_autodiscovery)
+        if found_log:
+            _, df_log, cm = found_log
+            urlc, uac = cm["url"], cm["user_agent"]
+            df_log = ensure_url_column(df_log, urlc).copy()
+
+            # Optional: Sessions/Visits/Hits-Spalte
+            sess_col = find_first_alias(df_log, "llm_crawl_freq")  # alias umfasst sessions/visits/hits/requests
+            has_amount = sess_col is not None and sess_col in df_log.columns
+
+            # Bot-Auswahl aus UI (falls gesetzt), sonst Heuristik
+            include_from_ui = st.session_state.llm_bot_include or []
+            exclude_from_ui = st.session_state.llm_bot_exclude or []
+            custom_inc = [s.strip() for s in (st.session_state.llm_bot_custom_include or "").split(",") if s.strip()]
+            custom_exc = [s.strip() for s in (st.session_state.llm_bot_custom_exclude or "").split(",") if s.strip()]
+
+            include_needles = include_from_ui + custom_inc
+            exclude_needles = exclude_from_ui + custom_exc
+
+            if not include_needles:
+                include_needles = INCLUDE_AI_BOTS[:]  # default
+            # klassische Bots immer zusätzlich ausschließen
+            exclude_needles = list(set((exclude_needles or []) + EXCLUDE_CLASSIC_BOTS))
+
+            mask_inc = df_log[uac].astype(str).map(lambda s: _contains_any(s, include_needles))
+            mask_exc = df_log[uac].astype(str).map(lambda s: _contains_any(s, exclude_needles))
+            mask = mask_inc & (~mask_exc)
+
+            df_sel = df_log.loc[mask, [urlc] + ([sess_col] if has_amount else [])].copy()
+            if df_sel.empty:
+                found = None
+            else:
+                if has_amount:
+                    df_sel[sess_col] = pd.to_numeric(df_sel[sess_col], errors="coerce").fillna(0)
+                    agg = df_sel.groupby(urlc, as_index=False)[sess_col].sum().rename(columns={sess_col: "llm_crawl_freq"})
+                else:
+                    agg = df_sel.groupby(urlc, as_index=False).size().rename(columns={"size": "llm_crawl_freq"})
+                found = ("llmcrawl_log", agg, {"url": urlc, "llm_crawl_freq": "llm_crawl_freq"})
+
     if found and master_urls is not None:
         _, df_lc, cm = found
         d = join_on_master(df_lc, cm["url"], [cm["llm_crawl_freq"]])
@@ -826,28 +1010,47 @@ if active.get("priority"):
     elif master_urls is not None:
         priority_url = pd.Series(1.0, index=master_urls.index)
 
-# --- Hauptkeyword-Potenzial (Expected Clicks bevorzugt, sonst SV) ---
-if active.get("main_kw"):
+# --- Hauptkeyword-Potenzial (Expected Clicks) ---
+if active.get("main_kw_exp"):
     found_any = find_df_with_targets(["url","main_keyword"], prefer_keys=["main_kw"], use_autodiscovery=use_autodiscovery)
     if found_any and master_urls is not None:
         _, df_m, cm = found_any
-        urlc, mkc = cm["url"], cm["main_keyword"]
+        urlc = cm["url"]
         expc = find_first_alias(df_m, "expected_clicks")
-        svc  = find_first_alias(df_m, "search_volume")
-        keep = [urlc, mkc] + [c for c in [expc, svc] if c]
-        j = join_on_master(df_m, urlc, [c for c in keep if c != urlc])
-        val_col = expc or svc
-        vals = pd.to_numeric(j[val_col], errors="coerce") if val_col else pd.Series(0.0, index=j.index)
-        results["main_kw"] = mode_score(vals).fillna(0.0)
-        dbg = {"main_keyword": j[mkc]}
-        if val_col: dbg[f"{val_col}_raw"] = j[val_col]
-        debug_cols["main_kw"] = dbg
+        if expc:
+            j = join_on_master(df_m, urlc, [cm["main_keyword"], expc])
+            vals = pd.to_numeric(j[expc], errors="coerce")
+            results["main_kw_exp"] = mode_score(vals).fillna(0.0)
+            debug_cols["main_kw_exp"] = {"main_keyword": j[cm["main_keyword"]], "expected_clicks_raw": j[expc]}
+        else:
+            results["main_kw_exp"] = pd.Series(0.0, index=master_urls.index)
     elif master_urls is not None:
-        results["main_kw"] = pd.Series(0.0, index=master_urls.index)
+        results["main_kw_exp"] = pd.Series(0.0, index=master_urls.index)
+
+# --- Hauptkeyword-Potenzial (Suchvolumen) ---
+if active.get("main_kw_sv"):
+    found_any = find_df_with_targets(["url","main_keyword"], prefer_keys=["main_kw"], use_autodiscovery=use_autodiscovery)
+    if found_any and master_urls is not None:
+        _, df_m, cm = found_any
+        urlc = cm["url"]
+        svc = find_first_alias(df_m, "search_volume")
+        if svc:
+            j = join_on_master(df_m, urlc, [cm["main_keyword"], svc])
+            vals = pd.to_numeric(j[svc], errors="coerce")
+            results["main_kw_sv"] = mode_score(vals).fillna(0.0)
+            debug_cols["main_kw_sv"] = {"main_keyword": j[cm["main_keyword"]], "search_volume_raw": j[svc]}
+        else:
+            results["main_kw_sv"] = pd.Series(0.0, index=master_urls.index)
+    elif master_urls is not None:
+        results["main_kw_sv"] = pd.Series(0.0, index=master_urls.index)
 
 # ============= Gewichte & Aggregation =============
 st.subheader("Gewichtung der aktiven Kriterien")
-weight_keys = [k for k in ["sc_clicks","sc_impr","otv","ext_pop","int_pop","llm_ref","llm_crawl","offtopic","revenue","seo_eff","main_kw"] if active.get(k)]
+weight_keys = [k for k in [
+    "sc_clicks","sc_impr","otv","ext_pop","int_pop",
+    "llm_ref","llm_crawl","offtopic","revenue","seo_eff",
+    "main_kw_exp","main_kw_sv"
+] if active.get(k)]
 weights: Dict[str, float] = {}
 if weight_keys:
     cols = st.columns(len(weight_keys))
@@ -912,7 +1115,14 @@ if master_urls is not None and weight_keys:
         "active_criteria": [k for k in active.keys() if active[k]],
         "uploads_used": {k: name for k, (_, name) in st.session_state.uploads.items()},
         "column_maps": st.session_state.column_maps,
-        "notes": "Masterliste: Union / Eigene / Merge(1-2) / Eine Datei / Schnittmenge. All-Inlinks in Union enthalten. SC Query→URL aggregiert. Embeddings robust. CSV-Compound-Fallback aktiv. Kein globaler Prioritätsfaktor.",
+        "llm_bot_selection": {
+            "detected": st.session_state.llm_bot_detected,
+            "include": st.session_state.llm_bot_include,
+            "exclude": st.session_state.llm_bot_exclude,
+            "custom_include": st.session_state.llm_bot_custom_include,
+            "custom_exclude": st.session_state.llm_bot_custom_exclude,
+        },
+        "notes": "Masterliste: Union / Eigene / Merge(1-2) / Eine Datei / Schnittmenge. All-Inlinks in Union enthalten. SC Query→URL aggregiert. Embeddings robust. CSV-Repair aktiv (1-Spalten-Files). LLM-Crawl: wahlweise manuelle Bot-Auswahl oder Heuristik.",
     }
     st.download_button("⬇️ Config (JSON)",
         data=json.dumps(config, indent=2).encode("utf-8"),
