@@ -438,7 +438,7 @@ CRITERIA_GROUPS = {
     ],
     "Strategische Steuerung": [
         ("priority", "Strategische Priorität (Override)",
-         "Manueller Multiplikator pro URL (0.5–2.0), skaliert den finalen Score nur für diese URL."),
+         "Manueller Multiplikator pro URL, skaliert den finalen Score nur für diese URL. Standardmäßig hat jede URL die Prio 1. Wenn hier in der Input-Datei eine URL die Priorität 1,2 bekommt, bekommt sie +20% Verstärkung für den finalen Score. Eine URL mit einer Prio von 2 wird doppelt gewichtet usw. In die Input-Datei müssen nur die URLs eingetragen werden, die geboostet werden soll, inkl. Prioritätsfaktor."),
     ],
 }
 
@@ -982,7 +982,12 @@ if active.get("priority"):
     if found and master_urls is not None:
         _, df_p, cm = found
         d = join_on_master(df_p, cm["url"], [cm["priority_factor"]])
-        priority_url = pd.to_numeric(d[cm["priority_factor"]], errors="coerce").fillna(1.0).clip(0.5, 2.0)
+        priority_url = (
+            pd.to_numeric(d[cm["priority_factor"]], errors="coerce")
+            .fillna(1.0)
+            .clip(lower=1.0)  # alles unter 1.0 wird auf 1.0 gesetzt
+        )
+      
     elif master_urls is not None:
         priority_url = pd.Series(1.0, index=master_urls.index)
 
