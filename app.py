@@ -122,7 +122,7 @@ ALIASES = {
 }
 
 TRACKING_PARAMS_PREFIXES = ["utm_", "icid_"]
-TRACKING_PARAMS_EXACT = {"gclid","fbclid","msclkid","mc_eid","yclid"}
+TRACKING_PARAMS_EXACT = {"gclid","fbclid","msclkid","mc_eid","yclid","twclid","igshid"}  # erweitert
 
 EXCLUDE_CLASSIC_BOTS = ["googlebot", "googlebot smartphone", "bingbot", "yandex", "baidu"]
 INCLUDE_AI_BOTS = [
@@ -167,33 +167,54 @@ def to_numeric_smart(s: pd.Series) -> pd.Series:
 
 # ---- Tracking-Query säubern & URL robust normalisieren ----
 def normalize_url(u: str) -> Optional[str]:
+    """
+    Robust gegen schemalose Eingaben wie 'example.com/foo':
+    - Wenn kein Schema erkennbar ist, mit '//' präfixen und dann netloc/path korrekt ermitteln.
+    - Standard-Schema: https
+    - Entfernt Tracking-Parameter gem. Whitelist
+    """
     if not isinstance(u, str) or not u.strip():
         return None
     s = u.strip()
     if "#" in s:
         s = s.split("#", 1)[0]
     try:
-        sp = urlsplit(s)
+        has_scheme = re.match(r"^[a-zA-Z][a-zA-Z0-9+\-.]*://", s) is not None
+        sp = urlsplit(s if has_scheme else f"//{s}", allow_fragments=True)
     except Exception:
         return None
-    scheme = (sp.scheme or "https").lower()
-    netloc = sp.netloc.lower()
 
+    scheme = (sp.scheme or "https").lower()
+    # Wenn wir ohne Schema geparst haben, landet der Host in sp.netloc, Pfad in sp.path
+    netloc = (sp.netloc or "").lower()
+    path = sp.path if sp.netloc else ""  # wenn netloc aus path kam, keinen zusätzlichen path setzen
+
+    # Query filtern
     keep_pairs = []
     for k, v in parse_qsl(sp.query, keep_blank_values=True):
         kl = k.lower()
-        if any(kl.startswith(pref) for pref in TRACKING_PARAMS_PREFIXES): continue
-        if kl in TRACKING_PARAMS_EXACT: continue
+        if any(kl.startswith(pref) for pref in TRACKING_PARAMS_PREFIXES): 
+            continue
+        if kl in TRACKING_PARAMS_EXACT: 
+            continue
         keep_pairs.append((k, v))
     query = urlencode(keep_pairs, doseq=True)
 
+    # Port-Defaults entfernen
     if scheme == "http" and netloc.endswith(":80"):
         netloc = netloc[:-3]
     if scheme == "https" and netloc.endswith(":443"):
         netloc = netloc[:-4]
 
-    return urlunsplit((scheme, netloc, sp.path, query, "")) or None
+    # Wenn netloc fehlt, kann der Host versehentlich in path stehen (extreme Edgecases)
+    if not netloc and has_scheme:
+        # Fallback: so wie es ist zurück
+        return urlunsplit((scheme, sp.netloc, sp.path, query, "")) or None
+    elif not netloc and not has_scheme:
+        # z. B. Input "example.com" → hier ist sp.netloc gesetzt (durch //), also sollte dieser Zweig selten sein
+        return None
 
+    return urlunsplit((scheme, netloc, path, query, "")) or None
 def read_table(uploaded) -> pd.DataFrame:
     """
     CSV/Excel robust:
@@ -417,8 +438,13 @@ def bucket_scores(series: pd.Series,
         bins = np.unique(qvals)
         if len(bins) < 3:
             return rank_scores(series, min_score=0.2)
+        # Falls Anzahl der Bins nicht zu den bucket_values passt, sicherheitshalber auf die passende Länge mappen
+        labels_count = len(bins) - 1
+        values = bucket_values[:labels_count] if len(bucket_values) >= labels_count else (
+            bucket_values + [bucket_values[-1]] * (labels_count - len(bucket_values))
+        )
         cats = pd.cut(s[mask], bins=bins, include_lowest=True, labels=False)
-        bv = dict(zip(range(len(bucket_values)), bucket_values))
+        bv = dict(zip(range(len(values)), values))
         res[mask] = cats.map(lambda i: bv.get(int(i), 0.0)).astype(float)
         return res
     except Exception:
@@ -429,7 +455,7 @@ def score_series(series: pd.Series, mode: str, min_score: float,
     return rank_scores(series, min_score) if mode == "Rank (linear)" else bucket_scores(series, quantiles, bucket_values)
 
 def default_ctr_curve() -> pd.DataFrame:
-    return pd.DataFrame({"position": list(range(1, 21)),
+    return pd.DataFrame({"position": list(range(1, 20+1)),
                          "ctr": [0.30,0.15,0.10,0.07,0.05,0.04,0.035,0.03,0.025,0.02,0.018,0.016,0.014,0.012,0.010,0.009,0.008,0.007,0.006,0.005]})
 
 def get_ctr_for_pos(pos: float, ctr_df: pd.DataFrame) -> float:
@@ -469,7 +495,6 @@ use_autodiscovery = st.sidebar.toggle(
     value=True,
     help="Wenn aktiv: Fehlen die vorgesehenen Dateien/Spalten, sucht das Tool automatisch in anderen Uploads nach passenden Spalten (per Alias)."
 )
-
 
 # ============= Kriterienauswahl (CLUSTERED) =============
 st.subheader("Kriterien auswählen")
@@ -530,7 +555,6 @@ for group, crits in CRITERIA_GROUPS.items():
     for code, label, helptext in crits:
         active[code] = st.checkbox(label, value=False, help=helptext, key=f"chk_{code}")
 
-
 # ============= Upload-Masken (nach Auswahl) =============
 st.markdown("---")
 st.subheader("Basierend auf den gewählten Kriterien benötigen wir folgende Dateien")
@@ -567,7 +591,6 @@ if active.get("sc_perf_class"):
     store_upload("sc_perf", st.file_uploader("SC Performance Datei (CSV/XLSX) – optional, sonst wird die normale SC-Datei verwendet", type=["csv","xlsx"], key="upl_sc_perf"))
     st.caption("Wenn hier **keine Datei** hochgeladen wird, verwendet das Tool automatisch die oben hochgeladene **Search Console Datei**.")
 
-
 if active.get("overall_traffic"):
     st.markdown("**Overall Traffic — erwartet:** `URL` + eine Traffic-Spalte (Aliases erkannt: sessions/visits/overall_clicks/…)")
     store_upload("overall", st.file_uploader("Overall Traffic Datei (CSV/XLSX)", type=["csv","xlsx"], key="upl_overall"))
@@ -578,7 +601,6 @@ if active.get("ai_overview"):
     st.caption("Hinweis: `current_url_inside` kann 1/0, true/false, ja/nein sein ODER die URL enthalten, wenn sie enthalten ist. Wir zählen je Zeile 1, wenn die URL tatsächlich in der AI Overview vorkommt.")
     store_upload("aiov", st.file_uploader("AI Overviews Datei (CSV/XLSX)", type=["csv","xlsx"], key="upl_aiov"))
 
-    
 if active.get("otv"):
     st.markdown("**Organic Traffic Value — erwartet:**")
     st.markdown("- **Variante A (URL-Value):** `URL`, `traffic_value` **oder** `potential_traffic_url` (+ optional `cpc`).")
@@ -596,7 +618,6 @@ if active.get("otv") or active.get("main_kw_exp"):
         type=["csv","xlsx"], key="upl_ctr"
     ))
     st.caption("Format: Spalten **position** (1..n) und **ctr** (0..1). Fehlende Datei ⇒ Standard-CTR.")
-
 
 if active.get("ext_pop"):
     st.markdown("**URL-Popularität extern — erwartet:** `URL`, `backlinks`, `ref_domains`.")
@@ -618,128 +639,28 @@ if active.get("llm_crawl"):
     st.markdown("- **Variante B (Logfile):** `URL`, `user_agent` (+ optional `sessions/visits/hits/requests`). Klassische Bots werden exkludiert.")
     store_upload("llmcrawl", st.file_uploader("LLM-Crawl (CSV/XLSX)", type=["csv", "xlsx"], key="upl_llmcrawl"))
 
+    # (3) NEU: UI für Aggregated/Logfile-Modus & Spaltenauswahl
+    with st.expander("LLM-Crawl – Modus & Spaltenauswahl", expanded=False):
+        mode = st.radio("Modus", ["Logfile", "Aggregiert (pro Bot-Spalte)"], index=0, key="llm_crawl_mode_radio")
+        st.session_state.llm_crawl_mode = "aggregated" if mode.startswith("Aggregiert") else "log"
+        if "llmcrawl" in st.session_state.uploads:
+            df_aggr, _ = st.session_state.uploads["llmcrawl"]
+            urlc = find_first_alias(df_aggr, "url")
+            if urlc:
+                bot_cols = [c for c in df_aggr.columns if c != urlc]
+                st.session_state.llm_bot_column_choices = st.multiselect(
+                    "Bot-Spalten wählen (Aggregiert):",
+                    bot_cols,
+                    default=bot_cols[:3],
+                    key="llm_bot_column_choices_ui"
+                )
+
 if active.get("llm_citations"):
     st.markdown("**LLM Citations — akzeptierte Formate:**")
     st.markdown("- **A (aggregiert):** `URL`, `llm_citations` (oder Alias wie `citations`).")
     st.markdown("- **B (pro Prompt/Keyword):** `keyword/prompt`, `URL` **und** je LLM eine Spalte (z. B. `gpt4`, `claude`, `perplexity`) mit 0/1, Anzahl oder der verlinkten URL.")
     st.markdown("- **C (pro Prompt/Keyword, eine Spalte):** `keyword/prompt`, `URL`, `cited_url` (wenn `cited_url == URL` ⇒ 1 Citation), optional `llm`.")
     store_upload("llmcite", st.file_uploader("LLM-Citations Datei (CSV/XLSX)", type=["csv","xlsx"], key="upl_llmcite"))
-
-        if url_col is None:
-            st.error("Konnte keine URL-Spalte erkennen. Bitte prüfe die Datei (Header `URL`).")
-        else:
-            if mode == "aggregated":
-                classic_bot_cols = {"googlebot","googlebot_smartphone","bingbot","yandex","baidu"}
-                ignore_cols_exact = {"alle_bots","gesamt","total","summe","sum","events","anzahl_ereignisse",
-                                     "ref_domains","referring_domains","backlinks","links_to_target"}
-                ignore_like_tokens = {"co2","antwortzeit","response","ms"}
-
-                def is_numeric_series(s: pd.Series) -> bool:
-                    a = pd.to_numeric(s, errors="coerce")
-                    if a.notna().any():  # normaler Fall
-                        return True
-                    # zweiter Versuch: deutsches Dezimalformat
-                    if s.astype(str).str.contains(r"\d+,\d+", regex=True).any():
-                        b = to_numeric_smart(s)
-                        return b.notna().any()
-                    return False
-
-                cand_cols = []
-                for c in cols:
-                    if c == url_col:
-                        continue
-                    cl = c.lower()
-                    if cl in ignore_cols_exact:
-                        continue
-                    if any(tok in cl for tok in ignore_like_tokens):
-                        continue
-                    if cl in classic_bot_cols:
-                        continue
-                    if is_numeric_series(df_llm[c]):
-                        cand_cols.append(c)
-
-                ai_pref_tokens = ["gpt","openai","oai","oai-searchbot","claude","anthropic",
-                                  "perplexity","perplexitybot","bytespider","ccbot","cohere",
-                                  "meta-ai","facebook","youbot","duckassist","kagi"]
-                default_ai = [c for c in cand_cols if any(tok in c.lower() for tok in ai_pref_tokens)]
-
-                st.info("Wähle, **welche Bot-Spalten** in die Berechnung einfließen sollen. Klassische Bots werden ignoriert.")
-                st.session_state["llm_bot_column_choices"] = st.multiselect(
-                    "Bot-Spalten auswählen",
-                    options=cand_cols,
-                    default=default_ai or cand_cols,
-                    help="Nur die hier ausgewählten Spalten werden je URL aufsummiert."
-                )
-
-                if st.session_state["llm_bot_column_choices"]:
-                    tmp = ensure_url_column(df_llm.copy(), url_col)
-                    for c in st.session_state["llm_bot_column_choices"]:
-                        tmp[c] = to_numeric_smart(tmp[c]).fillna(0)
-                    tmp["_llm_sum_preview"] = tmp[st.session_state["llm_bot_column_choices"]].sum(axis=1)
-                    prev = (
-                        tmp[[url_col, "_llm_sum_preview"]]
-                        .groupby(url_col, as_index=False)["_llm_sum_preview"]
-                        .sum()
-                        .rename(columns={url_col: "URL", "_llm_sum_preview": "LLM-Crawls (Auswahl)"})
-                    )
-                    st.dataframe(prev.head(10), use_container_width=True)
-                else:
-                    st.warning("Keine Bot-Spalten ausgewählt. Es werden 0 Besuche gezählt.")
-
-            else:
-                uas = df_llm[ua_col].astype(str).fillna("")
-                bot_counts: Dict[str, int] = {}
-
-                def label_for_ua(s: str) -> Optional[str]:
-                    s_l = s.lower()
-                    for token in EXCLUDE_CLASSIC_BOTS:
-                        if token in s_l: return token
-                    for token in INCLUDE_AI_BOTS:
-                        if token in s_l: return token
-                    for token in GENERIC_BOT_TOKENS:
-                        if token in s_l: return token
-                    return None
-
-                for ua in uas:
-                    lab = label_for_ua(ua)
-                    if lab:
-                        bot_counts[lab] = bot_counts.get(lab, 0) + 1
-
-                st.session_state.llm_bot_detected = bot_counts
-
-                if bot_counts:
-                    st.markdown("##### Erkannte Bots (aus User-Agent):")
-                    detected_ai = [b for b in bot_counts if b in INCLUDE_AI_BOTS]
-                    detected_classic = [b for b in bot_counts if b in EXCLUDE_CLASSIC_BOTS]
-                    other_bots = [b for b in bot_counts if b not in detected_ai + detected_classic]
-
-                    cols3 = st.columns(3)
-                    with cols3[0]:
-                        st.write("**AI/LLM (empfohlen einschließen)**")
-                        st.write(", ".join(f"{b} ({bot_counts[b]})" for b in detected_ai) or "—")
-                    with cols3[1]:
-                        st.write("**Klassisch (empfohlen ausschließen)**")
-                        st.write(", ".join(f"{b} ({bot_counts[b]})" for b in detected_classic) or "—")
-                    with cols3[2]:
-                        st.write("**Weitere Kandidaten**")
-                        st.write(", ".join(f"{b} ({bot_counts[b]})" for b in other_bots) or "—")
-
-                    all_bots_sorted = sorted(bot_counts.keys(), key=lambda x: (-bot_counts[x], x))
-                    st.info("Wähle unten, **welche Bots zählen sollen** (einschließen) und **welche ausgeschlossen werden**.")
-                    st.session_state.llm_bot_include = st.multiselect(
-                        "Bots einschließen (werden gezählt)",
-                        options=all_bots_sorted,
-                        default=[b for b in detected_ai if b in all_bots_sorted],
-                    )
-                    st.session_state.llm_bot_exclude = st.multiselect(
-                        "Bots ausschließen (werden ignoriert)",
-                        options=all_bots_sorted,
-                        default=[b for b in detected_classic if b in all_bots_sorted],
-                    )
-                    st.session_state.llm_bot_custom_include = st.text_input("Freie Muster zum Einschließen (kommagetrennt)", value="")
-                    st.session_state.llm_bot_custom_exclude = st.text_input("Freie Muster zum Ausschließen (kommagetrennt)", value="")
-                else:
-                    st.warning("Keine erkennbaren Bot-Muster in den User-Agents gefunden. Du kannst unten Freitext-Muster verwenden.")
 
 # Embeddings
 if active.get("offtopic"):
@@ -783,7 +704,6 @@ if active.get("seo_eff"):
     Wenn keine eigene Keyword-Datei vorhanden ist, verwendet das Tool automatisch die **Search Console Daten**
     (egal ob oben bei *Search Console*, bei *SC Performance-Klassifizierung* oder hier hochgeladen).
     """)
-
 
 # Priority
 if active.get("priority"):
@@ -842,12 +762,16 @@ def collect_urls_union(include_keys: Optional[List[str]] = None) -> Optional[pd.
     return None
 
 def collect_urls_intersection_all_uploads() -> Optional[pd.DataFrame]:
+    """
+    (4) Präziser & explizit normalisiert:
+    Wir normalisieren jede URL-Spalte mit ensure_url_column und bilden dann die Schnittmenge.
+    """
     url_sets = []
     for key, (df, _) in st.session_state.uploads.items():
         c = find_first_alias(df, "url")
         if not c:
             continue
-        d = ensure_url_column(df[[c]], c)
+        d = ensure_url_column(df[[c]].copy(), c)  # c ist jetzt normalisiert
         s = set(d[c].dropna().unique().tolist())
         if s:
             url_sets.append(s)
@@ -888,7 +812,6 @@ if master_urls is None or master_urls.empty:
         st.info("Noch keine Master-URLs erkannt. Lade mindestens eine Datei mit URL-Spalte hoch **oder** wähle eine der Masterlisten-Optionen.")
 else:
     st.success(f"Master-URLs: {len(master_urls):,}")
-
 # ============= Compute per-criterion scores =============
 def mode_score(series: pd.Series) -> pd.Series:
     return score_series(series, scoring_mode, min_score, [0.0, 0.5, 0.75, 0.9, 0.97, 1.0], [0.0, 0.25, 0.5, 0.75, 1.0])
@@ -923,6 +846,7 @@ if active.get("sc_clicks") or active.get("sc_impr"):
     elif master_urls is not None:
         if active.get("sc_clicks"): results["sc_clicks"] = pd.Series(0.0, index=master_urls.index)
         if active.get("sc_impr"):  results["sc_impr"]  = pd.Series(0.0, index=master_urls.index)
+
 # Overall Traffic
 if active.get("overall_traffic"):
     found = find_df_with_targets(["url","overall_traffic"], prefer_keys=["overall"], use_autodiscovery=use_autodiscovery)
@@ -934,9 +858,9 @@ if active.get("overall_traffic"):
         debug_cols["overall_traffic"] = {"overall_traffic_raw": vals}
     elif master_urls is not None:
         results["overall_traffic"] = pd.Series(0.0, index=master_urls.index)
+
 # SC Performance-Klassifizierung (diskrete Kategorien → feste Scores)
 if active.get("sc_perf_class"):
-    # Wir brauchen aggregierte SC-Klicks & -Impressions pro URL
     need_cols = ["url","clicks","impressions"]
     found = find_df_with_targets(need_cols, prefer_keys=["sc"], use_autodiscovery=use_autodiscovery)
     if found and master_urls is not None:
@@ -951,15 +875,12 @@ if active.get("sc_perf_class"):
         clicks = to_numeric_smart(d[cc]).fillna(0)
         impr   = to_numeric_smart(d[ic]).fillna(0)
 
-        # Schwellen aus Sidebar
         perf_min = st.session_state.get("th_perf", 1000)
         good_min = st.session_state.get("th_good", 101)
         fair_min = st.session_state.get("th_fair", 11)
         weak_min = st.session_state.get("th_weak", 1)
         opp_impr_min = st.session_state.get("th_opp_impr", 100)
 
-        # Kategorie-Scores aus Sidebar
-        # Fixe Kategorie-Scores (nicht veränderbar)
         score_map = {
             "Performance": 1.00,
             "Good":        0.75,
@@ -969,8 +890,7 @@ if active.get("sc_perf_class"):
             "Dead":        0.00,
         }
 
-
-        # Klassifizierungslogik (Priorität: 0-Klicks-Regeln vor Schwellen)
+        # Klassifizierungslogik
         cats = []
         for c, i in zip(clicks.values, impr.values):
             if c == 0:
@@ -984,89 +904,83 @@ if active.get("sc_perf_class"):
             elif c >= weak_min:
                 cats.append("Weak")
             else:
-                cats.append("Dead")  # Fallback
-
+                cats.append("Dead")
         cat_series = pd.Series(cats, index=d.index)
         score_series_disc = cat_series.map(score_map).astype(float).fillna(0.0)
 
-        # Dieser Score ist bereits 0..1 skaliert → direkt verwenden (unabhängig von globalem Modus)
         results["sc_perf_class"] = score_series_disc
 
-        # Debug/Preview
-        prev = pd.DataFrame({
-            "url": d["url_norm"],
-            "sc_clicks": clicks,
-            "sc_impressions": impr,
-            "sc_category": cat_series,
-            "sc_category_score": score_series_disc,
-        })
+        with st.expander("Vorschau: SC Performance-Klassifizierung (Top 10)", expanded=False):
+            prev = pd.DataFrame({
+                "url": d["url_norm"],
+                "sc_clicks": clicks,
+                "sc_impressions": impr,
+                "sc_category": cat_series,
+                "sc_category_score": score_series_disc,
+            })
+            st.dataframe(prev.head(10), use_container_width=True)
+
         debug_cols["sc_perf_class"] = {
             "category": cat_series,
             "category_score": score_series_disc,
             "clicks_raw": clicks,
             "impressions_raw": impr,
         }
-        st.dataframe(prev.head(10), use_container_width=True)
-
     elif master_urls is not None:
         results["sc_perf_class"] = pd.Series(0.0, index=master_urls.index)
 
 # AI Overviews Popularität
 if active.get("ai_overview"):
-    # Versuche, passende Spalten zu finden: url + ein "inside"-Feld
     found = find_df_with_targets(["url"], prefer_keys=["aiov"], use_autodiscovery=use_autodiscovery)
     if found and master_urls is not None:
         _, df_aio, cm = found
         urlc = cm["url"]
         df_aio = ensure_url_column(df_aio, urlc).copy()
 
-        # Mögliche Spaltennamen für das "inside"-Signal
         inside_candidates = [
             "current_url_inside", "inside_ai_overview", "ai_overview_inside", "in_ai_overview",
             "in_aio", "aio_inside", "ai_overview_flag", "inside"
         ]
         inside_col = next((c for c in inside_candidates if c in df_aio.columns), None)
 
-        # Falls kein explizites Flag: wir prüfen, ob eine Spalte mit der aktuellen URL existiert,
-        # die gesetzt ist, wenn sie in der AIO vorkommt
         if inside_col is None:
-            # heuristisch: eine Spalte, die „current“ + „inside“ enthält
             for c in df_aio.columns:
                 cl = c.lower()
                 if ("current" in cl or "inside" in cl or "ai" in cl) and c != urlc:
                     inside_col = c
                     break
 
-        # Hilfsfunktion: boolean/indicator aus verschiedenem Input ableiten
+        # (2) Aufgeräumte, eindeutige Heuristik ohne doppelten, unerreichbaren Block
         def _to_indicator(row) -> int:
             if inside_col is None:
                 return 0
             val = row.get(inside_col, None) if hasattr(row, "get") else (row[inside_col] if inside_col in row.index else None)
-        
-            # 1) harte Booleans / 0-1
+            s = (str(val) if val is not None else "").strip().lower()
+            if not s:
+                return 0
+
+            # 1) Zahlen/Booleans
             if isinstance(val, (int, float)):
                 return 1 if float(val) > 0 else 0
-            s = str(val).strip().lower() if val is not None else ""
-            if s in {"1","true","wahr","yes","ja","y"}:
-                return 1
-            if s in {"0","false","falsch","no","nein","n",""}:
-                return 0
-        
-            # 2) Feld enthält evtl. die URL selbst → Gleichheit prüfen
-            cur = row.get(urlc, None) if hasattr(row, "get") else (row[urlc] if urlc in row.index else None)
-            try:
-                u1 = normalize_url(s)
-                u2 = normalize_url(cur if cur is not None else "")
-                if u1 and u2 and u1 == u2:
+            if s in {"1","true","wahr","yes","ja","y"}: return 1
+            if s in {"0","false","falsch","no","nein","n"}: return 0
+
+            # 2) Term-Heuristik
+            ai_terms = {"ai overview","ai overviews","ai-overview","ai_overview","aio","aiov"}
+            if any(term in s for term in ai_terms):
+                if all(neg not in s for neg in {"not in","kein","nicht in","absent"}):
                     return 1
-            except Exception:
-                pass
+
+            # 3) Feld enthält evtl. die URL selbst → normalize & vergleichen
+            cur = row.get(urlc, None) if hasattr(row, "get") else (row[urlc] if urlc in row.index else None)
+            u1 = normalize_url(s) if s else None
+            u2 = normalize_url(cur if cur else "")
+            if u1 and u2 and u1 == u2:
+                return 1
+
             return 0
 
-
-
         if inside_col is None:
-            # kein verwertbares Inside-Feld gefunden → alles 0
             agg = df_aio[[urlc]].copy()
             agg["_aiov_cnt"] = 0
             agg = agg.groupby(urlc, as_index=False)["_aiov_cnt"].sum()
@@ -1076,13 +990,10 @@ if active.get("ai_overview"):
 
         d = master_urls.merge(agg, left_on="url_norm", right_on=urlc, how="left")
         cnts = to_numeric_smart(d["_aiov_cnt"]).fillna(0)
-
-        # Scoring über globalen Modus (Rank linear / Buckets); 0 ⇒ 0.0 wegen deiner rank_scores-Logik
         results["ai_overview"] = mode_score(cnts).fillna(0.0)
         debug_cols["ai_overview"] = {"ai_overview_count": cnts}
     elif master_urls is not None:
         results["ai_overview"] = pd.Series(0.0, index=master_urls.index)
-
 
 # OTV
 if active.get("otv"):
@@ -1251,13 +1162,11 @@ if active.get("llm_citations"):
 
     found_aggr = find_df_with_targets(["url","llm_citations"], prefer_keys=["llmcite"], use_autodiscovery=use_autodiscovery)
     if found_aggr and master_urls is not None:
-        # Format A: URL + llm_citations
         _, df_c, cm = found_aggr
         d = join_on_master(df_c, cm["url"], [cm["llm_citations"]])
         citations_series = to_numeric_smart(d[cm["llm_citations"]]).fillna(0)
 
     if citations_series is None:
-        # Versuche Format B/C
         found_any = find_df_with_targets(["url"], prefer_keys=["llmcite"], use_autodiscovery=use_autodiscovery)
         if found_any and master_urls is not None:
             _, df_c, cm = found_any
@@ -1265,40 +1174,33 @@ if active.get("llm_citations"):
             df_c = ensure_url_column(df_c, urlc).copy()
 
             cols = set(df_c.columns)
-            # Erkenne offensichtliche Felder
             kw_col = next((c for c in ["keyword","query","prompt","suchanfrage"] if c in cols), None)
             cited_url_col = next((c for c in ["cited_url","referenced_url","linked_url","quelle_url","source_url"] if c in cols), None)
             llm_col = next((c for c in ["llm","model","provider"] if c in cols), None)
 
-            # Heuristik für LLM-Spaltennamen (wenn es pro LLM eigene Spalten gibt)
             known_llm_tokens = ["gpt","openai","oai","chatgpt","gpt4","gpt-4","gpt-4o","claude","anthropic",
                                 "perplexity","perplexitybot","sonar","llama","meta","gemini","copilot","bing","kagi"]
             def looks_like_llm_col(c: str) -> bool:
                 cl = c.lower()
                 if c == urlc or c == kw_col or c == cited_url_col or c == llm_col:
                     return False
-                # numerisch oder string → okay; aber sollte einen LLM-Token enthalten
                 return any(tok in cl for tok in known_llm_tokens)
 
             llm_cols = [c for c in df_c.columns if looks_like_llm_col(c)]
 
             agg = None
             if cited_url_col:
-                # Format C: Eine Spalte enthält die tatsächlich zitierte URL
                 tmp = df_c[[urlc, cited_url_col]].copy()
                 tmp[cited_url_col] = tmp[cited_url_col].map(normalize_url)
                 tmp["_hit"] = (tmp[cited_url_col].notna() & (tmp[cited_url_col] == tmp[urlc])).astype(int)
                 agg = tmp.groupby(urlc, as_index=False)["_hit"].sum().rename(columns={"_hit":"_cit"})
             elif llm_cols:
-                # Format B: mehrere LLM-Spalten (0/1, Zahl, URL/String)
                 tmp = df_c[[urlc] + llm_cols].copy()
 
                 def col_to_numeric_hits(s: pd.Series) -> pd.Series:
-                    # 1) numerische Werte (0/1/Anzahl)
                     num = to_numeric_smart(s)
                     if num.notna().any():
                         return num.fillna(0)
-                    # 2) Strings: wenn nicht leer → 1 (z. B. enthält die verlinkte URL)
                     return s.astype(str).str.strip().replace({"": np.nan}).notna().astype(int)
 
                 for c in llm_cols:
@@ -1317,7 +1219,6 @@ if active.get("llm_citations"):
         else:
             results["llm_citations"] = mode_score(citations_series).fillna(0.0)
             debug_cols["llm_citations"] = {"llm_citations_raw": citations_series}
-
 
 # Offtopic
 if active.get("offtopic"):
@@ -1361,7 +1262,7 @@ if active.get("offtopic"):
                 vv = np.zeros(L, dtype=float); vv[:n] = v; return vv
 
             tmp["_vec2"] = tmp["_vec"].map(lambda v: pad_or_trunc(v, dominant_len))
-            valid = tmp[tmp["_vec2"].map(lambda v: isinstance(v, np.ndarray))].copy()
+            valid = tmp.loc[tmp["_vec2"].map(lambda v: isinstance(v, np.ndarray))].copy()
             if valid.empty:
                 results["offtopic"] = pd.Series(0.0, index=master_urls.index)
                 debug_cols["offtopic"] = {"similarity": pd.Series([np.nan]*len(master_urls))}
@@ -1404,13 +1305,11 @@ if active.get("revenue"):
 
 # SEO Efficiency
 if active.get("seo_eff"):
-    # Primär eigene Keyword-Datei, sonst Search Console
     found = find_df_with_targets(
         ["keyword","url","position"],
         prefer_keys=["eff_kw", "sc_eff", "sc", "sc_perf"],
         use_autodiscovery=use_autodiscovery
     )
-
     if found and master_urls is not None:
         _, df_e, cm = found
         urlc, posc = cm["url"], cm["position"]
@@ -1481,7 +1380,7 @@ if active.get("main_kw_sv"):
             j = join_on_master(df_m, urlc, [cm["main_keyword"], svc])
             vals = to_numeric_smart(j[svc])
             results["main_kw_sv"] = mode_score(vals).fillna(0.0)
-            debug_cols["main_kw_sv"] = {"main_keyword": j[cm["main_keyword"]], "search_volume_raw": j[svc]}
+            debug_cols["main_kw_sv"] = {"main_keyword": j[cm["main_keyword"]], "search_volume_raw": vals}
         else:
             results["main_kw_sv"] = pd.Series(0.0, index=master_urls.index)
     elif master_urls is not None:
@@ -1544,6 +1443,7 @@ if master_urls is not None and weight_keys:
     csv_bytes = df_out.to_csv(index=False).encode("utf-8-sig")
     st.download_button("⬇️ CSV herunterladen", data=csv_bytes, file_name="one_url_scoreboard.csv", mime="text/csv")
 
+    # (Bonus) XLSXWriter: Hinweis-Button, falls nicht installiert
     try:
         import xlsxwriter
         buf = io.BytesIO()
@@ -1554,6 +1454,10 @@ if master_urls is not None and weight_keys:
                     pd.DataFrame(cols).to_excel(writer, index=False, sheet_name=f"raw_{k}"[:31])
         st.download_button("⬇️ XLSX herunterladen", data=buf.getvalue(), file_name="one_url_scoreboard.xlsx",
                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    except ImportError:
+        st.warning("Für den XLSX-Export wird das Paket `xlsxwriter` benötigt.")
+        if st.button("Installationshinweis anzeigen"):
+            st.code("pip install XlsxWriter")
     except Exception:
         st.caption("Hinweis: Für XLSX-Export kann das Paket `xlsxwriter` erforderlich sein.")
 
