@@ -544,6 +544,11 @@ if active.get("sc_perf_class"):
     st.caption("""
     Fixe Kategorie-Scores: Performance=1.00 · Good=0.75 · Fair=0.50 · Weak=0.25 · Opportunity=0.15 · Dead=0.00
     """)
+    # --- Optionaler Upload für SC Performance-Datei ---
+    st.markdown("**SC Performance-Datei — erwartet:** `keyword/query/suchanfrage`, `URL`, `Clicks/Klicks`, `Impressions/Impressionen` (Query-Ebene möglich; wird pro URL aggregiert).")
+    store_upload("sc_perf", st.file_uploader("SC Performance Datei (CSV/XLSX) – optional, sonst wird die normale SC-Datei verwendet", type=["csv","xlsx"], key="upl_sc_perf"))
+    st.caption("Wenn hier **keine Datei** hochgeladen wird, verwendet das Tool automatisch die oben hochgeladene **Search Console Datei**.")
+
 
 if active.get("overall_traffic"):
     st.markdown("**Overall Traffic — erwartet:** `URL` + eine Traffic-Spalte (Aliases erkannt: sessions/visits/overall_clicks/…)")
@@ -846,7 +851,7 @@ debug_cols: Dict[str, Dict[str, pd.Series]] = {}
 # Search Console
 if active.get("sc_clicks") or active.get("sc_impr"):
     need_cols = ["url"] + (["clicks"] if active.get("sc_clicks") else []) + (["impressions"] if active.get("sc_impr") else [])
-    found = find_df_with_targets(need_cols, prefer_keys=["sc"], use_autodiscovery=use_autodiscovery)
+    found = find_df_with_targets(need_cols, prefer_keys=["sc","sc_perf"], use_autodiscovery=use_autodiscovery)
     if found and master_urls is not None:
         _, df_sc, colmap = found
         urlc = colmap["url"]
