@@ -116,6 +116,7 @@ ALIASES = {
     "priority_factor": ["priority_factor","prio","priority","priorität","gewicht","gewichtung","boost","override","weight_override","wichtigkeit","boost_faktor","faktor","manual_weight"],
     "keyword": ["keyword","query","suchbegriff","suchanfrage"],
     "main_keyword": ["main_keyword","hauptkeyword","primary_keyword","focus_keyword","focus_kw","haupt_kw","haupt-keyword"],
+    "overall_traffic": ["overall_traffic","traffic","sessions","overall_sessions","sessions_total","besuche","gesamt_traffic","gesamt_sessions","visits","overall_clicks","clicks_total","klicks_gesamt"],
     "expected_clicks": ["expected_clicks","exp_clicks","expected_clicks_main","expected_clicks_kw","erwartete_klicks","erw_klicks"],
 }
 
@@ -458,6 +459,7 @@ use_autodiscovery = st.sidebar.toggle(
     help="Wenn aktiv: Fehlen die vorgesehenen Dateien/Spalten, sucht das Tool automatisch in anderen Uploads nach passenden Spalten (per Alias)."
 )
 
+
 # ============= Kriterienauswahl (CLUSTERED) =============
 st.subheader("Kriterien auswählen")
 st.caption("Wähle unten die gewünschten Kriterien. Danach erscheinen die passenden Upload-Masken.")
@@ -476,6 +478,10 @@ CRITERIA_GROUPS = {
          "Entweder fertiger Wert **expected_clicks** ODER Berechnung aus (Suchvolumen × CTR(Position)). Je höher der Wert, desto besser. Voraussetzung: Es kann eine Datei mit mind. URL, Hauptkeyword und expected Klicks für das Hauptkeyword bereitgestellt werden ODER URL, Hauptkeyword und Ranking für Hauptkeyword."),
         ("llm_ref", "LLM-Referral-Traffic",
          "Erhält die URLs bereits Traffic aus LLMs? Je höher der Wert, desto besser."),
+        ("overall_traffic", "Overall Traffic (Sessions/Besuche/Klicks gesamt)",
+         "Gesamter Traffic pro URL (Sessions/Besuche/Klicks etc.). Aliases werden automatisch erkannt (z. B. sessions, visits, overall_clicks). Je mehr, desto besser."),
+        ("sc_perf_class", "SC Performance-Klassifizierung (Kategorien)",
+         "Diskrete URL-Klassifizierung aus Search Console (Klicks + Impressions). Schwellen frei definierbar; Kategorie-Scores sind fix."),
     ],
     "Popularität & Autorität": [
         ("ext_pop", "URL-Popularität extern",
@@ -514,7 +520,36 @@ st.subheader("Basierend auf den gewählten Kriterien benötigen wir folgende Dat
 if active.get("sc_clicks") or active.get("sc_impr"):
     st.markdown("**Search Console — erwartet:** `URL` (Alias: url/page/page_url/address), `Clicks/Klicks`, `Impressions/Impressionen`. **Query-Ebene ist ok** – wird pro URL aggregiert.")
     store_upload("sc", st.file_uploader("Search Console Datei (CSV/XLSX)", type=["csv","xlsx"], key="upl_sc"))
+# SC Performance-Klassifizierung Setup (nur Schwellenwerte)
+if active.get("sc_perf_class"):
+    st.markdown("### 🧩 SC Performance-Klassifizierung – Schwellen")
+    st.markdown("""
+    Definiere die **Klick-Schwellen** für die Kategorien sowie den **Impressionen-Schwellenwert**
+    für *Opportunity* (0 Klicks, Impressions ≥ X) vs. *Dead* (0 Klicks, Impressions < X).
+    Die **Kategorie-Scores sind fix** und werden nicht angepasst.
+    """)
 
+    c1, c2, c3, c4, c5 = st.columns(5)
+    with c1:
+        st.number_input("Performance ≥ Klicks", min_value=0, value=1000, step=10, key="th_perf")
+    with c2:
+        st.number_input("Good ≥ Klicks", min_value=0, value=101, step=5, key="th_good")
+    with c3:
+        st.number_input("Fair ≥ Klicks", min_value=0, value=11, step=1, key="th_fair")
+    with c4:
+        st.number_input("Weak ≥ Klicks", min_value=0, value=1, step=1, key="th_weak")
+    with c5:
+        st.number_input("Opportunity: 0 Klicks & Impr ≥", min_value=0, value=100, step=10, key="th_opp_impr")
+
+    st.caption("""
+    Fixe Kategorie-Scores: Performance=1.00 · Good=0.75 · Fair=0.50 · Weak=0.25 · Opportunity=0.15 · Dead=0.00
+    """)
+
+if active.get("overall_traffic"):
+    st.markdown("**Overall Traffic — erwartet:** `URL` + eine Traffic-Spalte (Aliases erkannt: sessions/visits/overall_clicks/…)")
+    store_upload("overall", st.file_uploader("Overall Traffic Datei (CSV/XLSX)", type=["csv","xlsx"], key="upl_overall"))
+
+    
 if active.get("otv"):
     st.markdown("**Organic Traffic Value — erwartet:**")
     st.markdown("- **Variante A (URL-Value):** `URL`, `traffic_value` **oder** `potential_traffic_url` (+ optional `cpc`).")
@@ -831,6 +866,94 @@ if active.get("sc_clicks") or active.get("sc_impr"):
     elif master_urls is not None:
         if active.get("sc_clicks"): results["sc_clicks"] = pd.Series(0.0, index=master_urls.index)
         if active.get("sc_impr"):  results["sc_impr"]  = pd.Series(0.0, index=master_urls.index)
+# Overall Traffic
+if active.get("overall_traffic"):
+    found = find_df_with_targets(["url","overall_traffic"], prefer_keys=["overall"], use_autodiscovery=use_autodiscovery)
+    if found and master_urls is not None:
+        _, df_o, cm = found
+        d = join_on_master(df_o, cm["url"], [cm["overall_traffic"]])
+        vals = to_numeric_smart(d[cm["overall_traffic"]]).clip(lower=0)
+        results["overall_traffic"] = mode_score(vals).fillna(0.0)
+        debug_cols["overall_traffic"] = {"overall_traffic_raw": vals}
+    elif master_urls is not None:
+        results["overall_traffic"] = pd.Series(0.0, index=master_urls.index)
+# SC Performance-Klassifizierung (diskrete Kategorien → feste Scores)
+if active.get("sc_perf_class"):
+    # Wir brauchen aggregierte SC-Klicks & -Impressions pro URL
+    need_cols = ["url","clicks","impressions"]
+    found = find_df_with_targets(need_cols, prefer_keys=["sc"], use_autodiscovery=use_autodiscovery)
+    if found and master_urls is not None:
+        _, df_sc2, cm2 = found
+        urlc = cm2["url"]; cc = cm2["clicks"]; ic = cm2["impressions"]
+        df_sc2 = ensure_url_column(df_sc2, urlc).copy()
+        df_sc2[cc] = to_numeric_smart(df_sc2[cc]).fillna(0)
+        df_sc2[ic] = to_numeric_smart(df_sc2[ic]).fillna(0)
+        agg = df_sc2.groupby(urlc, as_index=False)[[cc, ic]].sum()
+
+        d = master_urls.merge(agg, left_on="url_norm", right_on=urlc, how="left")
+        clicks = to_numeric_smart(d[cc]).fillna(0)
+        impr   = to_numeric_smart(d[ic]).fillna(0)
+
+        # Schwellen aus Sidebar
+        perf_min = st.session_state.get("th_perf", 1000)
+        good_min = st.session_state.get("th_good", 101)
+        fair_min = st.session_state.get("th_fair", 11)
+        weak_min = st.session_state.get("th_weak", 1)
+        opp_impr_min = st.session_state.get("th_opp_impr", 100)
+
+        # Kategorie-Scores aus Sidebar
+        # Fixe Kategorie-Scores (nicht veränderbar)
+        score_map = {
+            "Performance": 1.00,
+            "Good":        0.75,
+            "Fair":        0.50,
+            "Weak":        0.25,
+            "Opportunity": 0.15,
+            "Dead":        0.00,
+        }
+
+
+        # Klassifizierungslogik (Priorität: 0-Klicks-Regeln vor Schwellen)
+        cats = []
+        for c, i in zip(clicks.values, impr.values):
+            if c == 0:
+                cats.append("Opportunity" if i >= opp_impr_min else "Dead")
+            elif c >= perf_min:
+                cats.append("Performance")
+            elif c >= good_min:
+                cats.append("Good")
+            elif c >= fair_min:
+                cats.append("Fair")
+            elif c >= weak_min:
+                cats.append("Weak")
+            else:
+                cats.append("Dead")  # Fallback
+
+        cat_series = pd.Series(cats, index=d.index)
+        score_series_disc = cat_series.map(score_map).astype(float).fillna(0.0)
+
+        # Dieser Score ist bereits 0..1 skaliert → direkt verwenden (unabhängig von globalem Modus)
+        results["sc_perf_class"] = score_series_disc
+
+        # Debug/Preview
+        prev = pd.DataFrame({
+            "url": d["url_norm"],
+            "sc_clicks": clicks,
+            "sc_impressions": impr,
+            "sc_category": cat_series,
+            "sc_category_score": score_series_disc,
+        })
+        debug_cols["sc_perf_class"] = {
+            "category": cat_series,
+            "category_score": score_series_disc,
+            "clicks_raw": clicks,
+            "impressions_raw": impr,
+        }
+        st.dataframe(prev.head(10), use_container_width=True)
+
+    elif master_urls is not None:
+        results["sc_perf_class"] = pd.Series(0.0, index=master_urls.index)
+        
 
 # OTV
 if active.get("otv"):
@@ -1161,6 +1284,7 @@ weight_keys = [k for k in [
     "sc_clicks","sc_impr","seo_eff","main_kw_sv","main_kw_exp",
     "ext_pop","int_pop","llm_ref","llm_crawl",
     "otv","revenue","offtopic",
+    "overall_traffic","sc_perf_class",
 ] if active.get(k)]
 
 weights: Dict[str, float] = {}
