@@ -97,7 +97,7 @@ st.session_state.setdefault("llm_crawl_mode", None)
 st.session_state.setdefault("llm_bot_column_choices", [])
 
 ALIASES = {
-    "url": ["url","page","page_url","seite","address","adresse","target","ziel","ziel_url","landing_page"],
+    "url": ["url","page","page_url","seite","address","adresse","target","ziel","ziel_url","landing_page","current_url"],
     "clicks": ["clicks","klicks","traffic","besuche","sc_clicks"],
     "impressions": ["impressions","impr","impressionen","search_impressions"],
     "position": ["position","avg_position","ranking","ranking_position","average_position","durchschnittliche_position","durchschn._position","rank","avg_rank","current_position"],
