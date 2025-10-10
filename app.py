@@ -384,14 +384,24 @@ def find_df_with_targets(targets: List[str], prefer_keys: Optional[List[str]] = 
 
 # ============= Scoring =============
 def rank_scores(series: pd.Series, min_score: float = 0.2) -> pd.Series:
-    s = to_numeric_smart(series).clip(lower=0)
-    mask = s.notna()
-    if mask.sum() <= 1:
-        out = pd.Series(0.0, index=s.index); out[mask] = 1.0; return out
-    ranks = s[mask].rank(method="average", ascending=False)  # 1=best
+    """
+    Neu: Nur Werte > 0 werden gerankt.
+    - Werte == 0 und fehlende Werte (NaN) bekommen IMMER 0.0
+    - Unter den positiven Werten bekommt die schlechteste mind. 'min_score'
+    """
+    s = to_numeric_smart(series)
+    s = s.clip(lower=0)  # negative -> 0
+    mask_pos = s > 0     # NUR positive Werte werden gerankt
+
     out = pd.Series(0.0, index=s.index)
+    if mask_pos.sum() <= 1:
+        # genau ein positiver Wert -> 1.0; 0/NaN bleiben 0.0
+        out[mask_pos] = 1.0
+        return out
+
+    ranks = s[mask_pos].rank(method="average", ascending=False)  # 1 = bester Wert
     n = len(ranks)
-    out[mask] = 1.0 - (ranks - 1) / (n - 1) * (1.0 - min_score)
+    out.loc[mask_pos] = 1.0 - (ranks - 1) / (n - 1) * (1.0 - min_score)
     return out
 
 def bucket_scores(series: pd.Series,
@@ -440,7 +450,7 @@ min_score = (
     st.sidebar.slider(
         "Min-Score schlechteste vorhandene URL",
         0.0, 0.5, 0.2, 0.05,
-        help="Nur für Rank (linear): Der schlechtesten (vorhandenen) URL wird mindestens dieser Score zugewiesen. Fehlende Werte bekommen immer 0.0."
+        help="Nur für Rank (linear): Unter den URLs mit > 0 im aktiven Kriterium erhält die schlechteste mindestens diesen Score. URLs ohne Wert oder mit 0 bekommen immer 0.0."
     )
     if scoring_mode == "Rank (linear)" else 0.2
 )
