@@ -730,8 +730,37 @@ if active.get("revenue"):
 
 # SEO Efficiency
 if active.get("seo_eff"):
-    st.markdown("**URL-SEO-Effizienz — erwartet:** `keyword`, `URL`, `position` (Top-5-Anteil je URL wird berechnet).")
-    store_upload("eff_kw", st.file_uploader("Keyword-Datei (SEO-Effizienz)", type=["csv","xlsx"], key="upl_eff_kw"))
+    st.markdown("""
+    **URL-SEO-Effizienz — erwartet:**  
+    `keyword/query/suchanfrage`, `URL`, `position`  
+    (Top-5-Anteil je URL wird berechnet – Anteil der Keywords mit Position ≤ 5).  
+    """)
+
+    c1, c2 = st.columns(2)
+    with c1:
+        store_upload(
+            "eff_kw",
+            st.file_uploader(
+                "Keyword-Datei (SEO-Effizienz, z. B. Sistrix/Ahrefs)",
+                type=["csv","xlsx"],
+                key="upl_eff_kw"
+            )
+        )
+    with c2:
+        store_upload(
+            "sc_eff",
+            st.file_uploader(
+                "Search Console Datei (optional, falls noch nicht oben geladen)",
+                type=["csv","xlsx"],
+                key="upl_sc_eff"
+            )
+        )
+
+    st.caption("""
+    Wenn keine eigene Keyword-Datei vorhanden ist, verwendet das Tool automatisch die **Search Console Daten**
+    (egal ob oben bei *Search Console*, bei *SC Performance-Klassifizierung* oder hier hochgeladen).
+    """)
+
 
 # Priority
 if active.get("priority"):
@@ -1206,7 +1235,13 @@ if active.get("revenue"):
 
 # SEO Efficiency
 if active.get("seo_eff"):
-    found = find_df_with_targets(["keyword","url","position"], prefer_keys=["eff_kw"], use_autodiscovery=use_autodiscovery)
+    # Primär eigene Keyword-Datei, sonst Search Console
+    found = find_df_with_targets(
+        ["keyword","url","position"],
+        prefer_keys=["eff_kw", "sc_eff", "sc", "sc_perf"],
+        use_autodiscovery=use_autodiscovery
+    )
+
     if found and master_urls is not None:
         _, df_e, cm = found
         urlc, posc = cm["url"], cm["position"]
