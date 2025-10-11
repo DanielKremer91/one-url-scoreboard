@@ -546,43 +546,83 @@ CRITERIA_GROUPS = {
 }
 
 
-# ============= Kriterienauswahl – Karten mit integriertem Toggle =============
+# ============= Kriterienauswahl – Switcher außerhalb, Karten nur mit Info =============
 st.subheader("Kriterien auswählen")
-st.caption("Wähle unten die gewünschten Kriterien. Danach erscheinen die passenden Upload-Masken.")
+st.caption("Aktiviere Kriterien über die Schalter. Die Karten dienen als Info (Tooltip bei Hover).")
 
-# Layout: wie viele Karten pro Zeile
+# (Optional) kleines CSS für hübschere Info-Badges
+st.markdown("""
+<style>
+.info-wrap{display:inline-flex;align-items:center;gap:8px}
+.info{position:relative;display:inline-block;cursor:help;font-size:14px;line-height:1}
+.info::after{content:"ℹ️";}
+.info .tip{
+  visibility:hidden;opacity:0;transition:all .12s ease;
+  position:absolute;z-index:50;right:0;top:130%;
+  width:320px;max-width:min(80vw,320px);
+  background:#111827;color:#fff;padding:10px 12px;border-radius:10px;
+  box-shadow:0 8px 24px rgba(0,0,0,.15);font-size:.86rem;line-height:1.35;
+}
+.info:hover .tip{visibility:visible;opacity:1;transform:translateY(-2px);}
+.info .tip b{color:#fff}
+.info .tip code{background:#1f2937;padding:0 .25em;border-radius:4px}
+</style>
+""", unsafe_allow_html=True)
+
 cards_per_row = 3
 
-def render_card(col, code: str, label: str, helptext: str) -> bool:
-    """Rendert eine Karte mit Titel, Info-Tooltip und Toggle (rechts)."""
-    with col.container(border=True):
-        r1c1, r1c2 = st.columns([1, 0.23])
-        with r1c1:
-            st.markdown(f"**{label}**")
-            # kleiner Infohinweis per Hover (nutzt Streamlit-Tooltip/Help)
-            st.caption("ℹ️ Details: Maus darüber halten.")
-        with r1c2:
-            # Toggle im Kartentitelbereich; help zeigt den vollständigen Text on-hover
-            state = st.toggle("Aktiv", key=f"toggle_{code}", value=False, help=helptext)
-        # kurze Beschreibung unter dem Header
-        st.markdown(f"<div style='color:#4b5563;font-size:0.92rem;line-height:1.35'>{helptext}</div>", unsafe_allow_html=True)
-    return state
+def info_badge(helptext: str) -> str:
+    return f'''
+    <span class="info" aria-label="Info">
+      <span class="tip">{helptext}</span>
+    </span>
+    '''
 
+def render_info_card(col, code: str, label: str, helptext: str):
+    """Nur Info-Karte (ohne Toggle)."""
+    with col.container(border=True):
+        # Header mit Label + Info-Badge (Hover)
+        st.markdown(
+            f'<div class="info-wrap"><strong>{label}</strong> {info_badge(helptext)}</div>',
+            unsafe_allow_html=True
+        )
+        # Kurze Beschreibung (gleich wie Tooltip-Inhalt, aber sichtbar)
+        st.markdown(
+            f"<div style='color:#4b5563;font-size:0.92rem;line-height:1.35'>{helptext}</div>",
+            unsafe_allow_html=True
+        )
+
+# 1) Schalter-Reihe(n) OBEN: On/Off pro Kriterium (außerhalb der Karten)
 active: Dict[str, bool] = {}
 
 for group, crits in CRITERIA_GROUPS.items():
     st.markdown(f"### {group}")
-    # Karten im Grid mittels columns
+    st.markdown("**Kriterien aktivieren/deaktivieren**")
+    # Switcher im Grid
     rows = (len(crits) + cards_per_row - 1) // cards_per_row
     idx = 0
     for _ in range(rows):
         cols = st.columns(cards_per_row)
         for c in cols:
-            if idx >= len(crits):
-                break
+            if idx >= len(crits): break
             code, label, helptext = crits[idx]
-            active[code] = render_card(c, code, label, helptext)
+            with c:
+                # Toggle ist außerhalb der Karte; Tooltip via `help`
+                active[code] = st.toggle(label, key=f"toggle_{code}", value=False, help=helptext)
             idx += 1
+
+    # 2) Info-Karten UNTEN: rein informativ, ohne Switcher
+    st.markdown("**Kriterien-Infos**")
+    rows = (len(crits) + cards_per_row - 1) // cards_per_row
+    idx = 0
+    for _ in range(rows):
+        cols = st.columns(cards_per_row)
+        for c in cols:
+            if idx >= len(crits): break
+            code, label, helptext = crits[idx]
+            render_info_card(c, code, label, helptext)
+            idx += 1
+
 
 
 
