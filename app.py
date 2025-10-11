@@ -524,44 +524,63 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+st.markdown("""
+<style>
+.info-wrap{display:flex;align-items:center;gap:8px}
+.info{position:relative;display:inline-block;cursor:help;font-size:14px;line-height:1}
+.info::after{content:"ℹ️";}
+.info .tip{
+  visibility:hidden;opacity:0;transition:all .12s ease;
+  position:absolute;z-index:50;right:0;top:130%;
+  width:320px;max-width:min(80vw,320px);
+  background:#111827;color:#fff;padding:10px 12px;border-radius:10px;
+  box-shadow:0 8px 24px rgba(0,0,0,.15);font-size:.86rem;line-height:1.35;
+}
+.info:hover .tip{visibility:visible;opacity:1;transform:translateY(-2px);}
+.info .tip b{color:#fff}
+.info .tip code{background:#1f2937;padding:0 .25em;border-radius:4px}
+</style>
+""", unsafe_allow_html=True)
+
+
 CRITERIA_GROUPS = {
     "Performance & Nachfrage": [
         ("sc_clicks", "Search Console Klicks",
-         "Search Console Klicks – wie viele Klicks die URL geholt hat. Je mehr, desto besser."),
+         "Wie viele Klicks eine URL generiert hat."),
         ("sc_impr", "Search Console Impressions",
-         "Search Console Impressions – wie viele Impressionen in der Google Suche die URL generiert hat. Je mehr, desto besser."),
-        ("sc_perf_class", "Search Console Performance-Klassifizierung (Kategorien)",
-         "Diskrete URL-Klassifizierung aus Search Console (Klicks + Impressions). Du definierst Klick-Schwellen (Performance/Good/Fair/Weak) und einen Impressions-Schwellenwert für 0-Klick-Keywords: Opportunity (0 Klicks & Impressions ≥ X) oder Dead (0 Klicks & Impressions < X). "
-         "Beispiel: Mit Schwellen Performance ≥ 1000 Klicks, Good ≥ 101, Fair ≥ 11, Weak ≥ 1; Opportunity ab 0 Klicks & ≥ 100 Impressions. "
-         "Eine URL mit 0 Klicks und 250 Impressions wird ‚Opportunity‘ (Score 0.15), eine URL mit 15 Klicks wird ‚Fair‘ (0.50), mit 120 Klicks ‚Good‘ (0.75) etc."),
+         "Wie viele Imptessionen eine URL geholt hat"),
+        ("sc_perf_class", "Search Console Performance-Klassifizierung (nach Kategorien)",
+         "URLs werden anhand von Klick- und Impressions-Schwellen in die Kategorien Performance/Good/Fair/Weak/Opportunity/Dead eingeteilt. Jede Kategorie erhält einen fixen Score."
+         "Beispiel: Mit Schwellen Performance ≥ 1000 Klicks Performance, Good ≥ 101, Fair ≥ 11, Weak ≥ 1; Opportunity 0 Klicks & ≥ 100 Impressions. "
+         "Perfomance (Score 1.0), Good (Score 0.75), Fair (Score 0.50), Weak (Score 0.25), Opportunity (Score 0.15), Dead (Score 0.0)"),
         ("seo_eff", "URL-SEO-Effizienz",
          "Anteil der Keywords einer URL mit durchschnittlicher Position ≤ 5. Je höher der Anteil, desto effizienter."),
         ("main_kw_sv", "Potenzial Hauptkeyword der URL (gemessen am Suchvolumen)",
-         "Je höher das Suchvolumen des Hauptkeywords für die URL, desto besser. Voraussetzung: Es kann eine Datei mit mind. URL, Hauptkeyword und Suchvolumen Hauptkeyword bereitgestellt werden."),
+         "Je höher das Suchvolumen des Hauptkeywords für die URL, desto besser."),
         ("main_kw_exp", "Potenzial Hauptkeyword der URL (gemessen an Expected Clicks)",
-         "Entweder fertiger Wert **expected_clicks** ODER Berechnung aus (Suchvolumen × CTR(Position)). Je höher der Wert, desto besser. Voraussetzung: Es kann eine Datei mit mind. URL, Hauptkeyword und expected Klicks für das Hauptkeyword bereitgestellt werden ODER URL, Hauptkeyword und Ranking für Hauptkeyword."),
+         "Je höher die erwarteten Klicks für das Keyword, desto besser."),
         ("llm_ref", "LLM-Referral-Traffic",
-         "Erhält die URLs bereits Traffic aus LLMs? Je höher der Wert, desto besser."),
-        ("overall_traffic", "Overall Traffic (Sessions/Besuche/Klicks gesamt)",
-         "Gesamter Traffic pro URL (Sessions/Besuche/Klicks etc.). Aliases werden automatisch erkannt (z. B. sessions, visits, overall_clicks). Je mehr, desto besser."),
+         "Wie viel Traffic/Klicks erhält eine URL aus LLMs?"),
+        ("overall_traffic", "Overall Traffic",
+         "Gesamter Traffic pro URL über alle Kanäle hinweg"),
     ],
     "Popularität & Autorität": [
         ("ai_overview", "AI Overviews Popularität",
-         "Wie häufig wird die URL momentan in Google AI Overviews als Quelle gezeigt? Je öfter, desto besser."),
+         "Wie häufig wird die URL in Google AI Overviews als Quelle gezeigt?"),
         ("ext_pop", "URL-Popularität extern",
          "Wie viele Backlinks von wie vielen unterschiedlichen (Referring) Domains erhält die URL? Das Tool gewichtet folgendermaßen: 70% Ref. Domains + 30% Backlinks."),
         ("int_pop", "URL-Popularität intern",
-         "Eindeutige interne Inlinks pro URL, wird entweder direkt `unique_inlinks` oder aus hochgeladener all inlinks Datei berechnet."),
+         "Eindeutige interne Inlinks pro URL."),
         ("llm_crawl", "LLM-Crawl-Frequenz",
-         "Wie häufig wird die URL von LLM-Bots gecrawlt? Klassische Bots (Googlebot, Bingbot, Yandex, Baidu) sind exkludiert."),
+         "Wie häufig wird die URL von LLM-Bots gecrawlt? Klassische Bots (Googlebot, Bingbot, Yandex, Baidu) werden exkludiert."),
         ("llm_citations", "LLM Citations",
-         "Wie häufig wird die URL in Antworten von LLMs als Quelle zitiert/verlinkt? Je häufiger, desto besser."),
+         "Wie häufig wird die URL in Antworten von LLMs als Quelle zitiert/verlinkt?"),
     ],
     "Wirtschaftlicher Impact": [
         ("otv", "Organic Traffic Value",
-         "Geschätzter organischer Traffic-Wert der URL (direkt vorhanden oder aus Keyword-Datei via CTR-Kurve)."),
+         "Geschätzter organischer Traffic-Wert der URL"),
         ("revenue", "Umsatz",
-         "Tatsächlich erzielter Umsatz der URL."),
+         "Generierter Umsatz pro URL"),
     ],
     "Qualität & Relevanz": [
         ("offtopic", "Offtopic-Score",
@@ -569,8 +588,67 @@ CRITERIA_GROUPS = {
     ],
     "Strategische Steuerung": [
         ("priority", "Strategische Priorität (Multiplikator)",
-         "Manueller Multiplikator pro URL, skaliert den finalen Score nur für diese URL. Standardmäßig hat jede URL die Prio 1. Wenn hier in der Input-Datei eine URL die Priorität 1,2 bekommt, bekommt sie +20% Verstärkung für den finalen Score. Eine URL mit einer Prio von 2 wird doppelt gewichtet usw. In die Input-Datei müssen nur die URLs eingetragen werden, die geboostet werden soll, inkl. Prioritätsfaktor."),
+         "Manueller Multiplikator pro URL, skaliert den finalen Score nur für diese URL. Standardmäßig hat jede URL die Prio 1. Wenn hier in der Input-Datei eine URL die Priorität 1,2 bekommt, bekommt sie +20% Verstärkung für den finalen Score."),
     ],
+}
+
+TOOLTIP_INFO = {
+    "sc_clicks": """<b>Benötigte Daten</b>: <code>URL</code>, <code>Clicks/Klicks</code> (Query-Ebene ok, wird pro URL summiert).<br>
+    <b>Berechnung</b>: Summe Klicks je URL → in Score transformiert nach globalem Modus (Rank/Perzentil).""",
+
+    "sc_impr": """<b>Benötigte Daten</b>: <code>URL</code>, <code>Impressions</code> (Query-Ebene ok).<br>
+    <b>Berechnung</b>: Summe Impressions je URL → Score nach globalem Modus.""",
+
+    "sc_perf_class": """<b>Benötigte Daten</b>: <code>URL</code>, <code>Clicks</code>, <code>Impressions</code> (Query-Ebene ok).<br>
+    <b>Berechnung</b>: Einteilung nach Schwellen (UI) in Performance/Good/Fair/Weak/Opportunity/Dead → fixe Scores: 1.00/0.75/0.50/0.25/0.15/0.00.""",
+
+    "seo_eff": """<b>Benötigte Daten</b>: <code>keyword/query</code>, <code>URL</code>, <code>position</code> (aus KW-Tool oder GSC).<br>
+    <b>Berechnung</b>: Anteil Position ≤5 pro URL, Bayes-Glättung mit <i>s₀</i>, optional Volumen-Gewicht → Score nach globalem Modus.""",
+
+    "main_kw_sv": """<b>Benötigte Daten</b>: <code>URL</code>, <code>main_keyword</code>, <code>search_volume</code>.<br>
+    <b>Berechnung</b>: Suchvolumen des Hauptkeywords pro URL → Score nach globalem Modus.""",
+
+    "main_kw_exp": """<b>Benötigte Daten</b> (eine der Varianten):<br>
+    • A: <code>URL</code>, <code>main_keyword</code>, <code>expected_clicks</code><br>
+    • B: <code>URL</code>, <code>main_keyword</code>, <code>position</code>, <code>search_volume</code> (+ optional <code>CTR-Kurve</code>)<br>
+    <b>Berechnung</b>: Expected Clicks je URL (direkt oder SV×CTR(pos)) → Score nach globalem Modus.""",
+
+    "llm_ref": """<b>Benötigte Daten</b>: <code>URL</code>, <code>LLM-Referrals/Traffic</code> (genau zwei Spalten).<br>
+    <b>Berechnung</b>: Wert je URL → Score nach globalem Modus.""",
+
+    "overall_traffic": """<b>Benötigte Daten</b>: <code>URL</code> + eine Gesamt-Traffic-Spalte (Aliases: sessions/visits/overall_clicks …).<br>
+    <b>Berechnung</b>: Wert je URL → Score nach globalem Modus.""",
+
+    "ai_overview": """<b>Benötigte Daten</b>: <code>keyword</code>, <code>url</code>, <code>current_url_inside</code> (1/0, true/false oder URL).<br>
+    <b>Berechnung</b>: Zeilen mit Treffer je URL zählen → Score nach globalem Modus.""",
+
+    "ext_pop": """<b>Benötigte Daten</b>: <code>URL</code>, <code>backlinks</code>, <code>ref_domains</code>.<br>
+    <b>Berechnung</b>: Score = 0.3·Score(BL) + 0.7·Score(RD) (beide nach globalem Modus).""",
+
+    "int_pop": """<b>Benötigte Daten</b>: Variante A: <code>URL</code>, <code>unique_inlinks</code> — oder<br>
+    Variante B (Kantenliste): <code>URL</code> (=Ziel) + <code>source/referrer</code>.<br>
+    <b>Berechnung</b>: Eindeutige Inlinks je URL → Score nach globalem Modus.""",
+
+    "llm_crawl": """<b>Benötigte Daten</b>: Aggregiert: <code>URL</code> + Bot-Spalten (GPTBot, ClaudeBot …) — oder<br>
+    Logfile: <code>URL</code>, <code>user_agent</code> (+ optional Menge). Klassische Bots werden exkludiert.<br>
+    <b>Berechnung</b>: Treffer/Frequenz je URL → Score nach globalem Modus.""",
+
+    "llm_citations": """<b>Benötigte Daten</b>: Aggregiert: <code>URL</code>, <code>llm_citations</code> — oder<br>
+    Pro Prompt: <code>keyword/prompt</code>, <code>URL</code> + LLM-Spalten (0/1/Anzahl) oder <code>cited_url</code>.<br>
+    <b>Berechnung</b>: Zitate je URL zählen → Score nach globalem Modus.""",
+
+    "otv": """<b>Benötigte Daten</b>: Variante A: <code>URL</code>, <code>traffic_value</code> oder <code>potential_traffic_url</code> (+ optional <code>cpc</code>) — oder<br>
+    Variante B: <code>keyword</code>, <code>URL</code>, <code>position</code>, <code>search_volume</code> (+ optional <code>cpc</code>, <code>CTR-Kurve</code>).<br>
+    <b>Berechnung</b>: (SV×CTR×CPC) je KW summiert pro URL (oder Value direkt) → Score nach globalem Modus.""",
+
+    "revenue": """<b>Benötigte Daten</b>: <code>URL</code>, <code>revenue</code>.<br>
+    <b>Berechnung</b>: Wert je URL → Score nach globalem Modus.""",
+
+    "offtopic": """<b>Benötigte Daten</b>: <code>URL</code>, <code>embedding</code> (Vektor als JSON/Sequenz).<br>
+    <b>Berechnung</b>: Cosine-Similarity zur Themen-Centroid; Score = 1, wenn ≥ τ (Slider), sonst 0.""",
+
+    "priority": """<b>Benötigte Daten</b>: <code>URL</code>, <code>priority_factor</code> (0.5–2.0).<br>
+    <b>Berechnung</b>: Multipliziert den <i>final_score</i> der URL (kein eigenes Kriteriumsscore).""",
 }
 
 
@@ -593,15 +671,21 @@ for group, crits in CRITERIA_GROUPS.items():
         )
 
         # Karte rendern (Titel + Beschreibung)
+        # NEU – mit Info-Icon & Tooltip
+        tooltip_html = TOOLTIP_INFO.get(code, "")
         st.markdown(f"""
             <div class="module-card">
                 <div class="module-row">
                     <div class="module-title">{label}</div>
-                    <div>{'✅' if toggle_state else '⬜️'}</div>
+                    <div class="info-wrap">
+                        <span class="info"><span class="tip">{tooltip_html}</span></span>
+                        <div>{'✅' if toggle_state else '⬜️'}</div>
+                    </div>
                 </div>
                 <div class="module-desc">{helptext}</div>
             </div>
         """, unsafe_allow_html=True)
+
 
         # Status im bekannten Dict speichern (abwärtskompatibel zum restlichen Code)
         active[code] = toggle_state
