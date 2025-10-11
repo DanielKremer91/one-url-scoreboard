@@ -496,6 +496,56 @@ use_autodiscovery = st.sidebar.toggle(
     help="Wenn aktiv: Fehlen die vorgesehenen Dateien/Spalten, sucht das Tool automatisch in anderen Uploads nach passenden Spalten (per Alias)."
 )
 
+CRITERIA_GROUPS = {
+    "Performance & Nachfrage": [
+        ("sc_clicks", "Search Console Klicks",
+         "Wie viele Klicks eine URL generiert hat."),
+        ("sc_impr", "Search Console Impressions",
+         "Wie viele Imptessionen eine URL geholt hat"),
+        ("sc_perf_class", "Search Console Performance-Klassifizierung (nach Kategorien)",
+         "URLs werden anhand von Klick- und Impressions-Schwellen in die Kategorien Performance/Good/Fair/Weak/Opportunity/Dead eingeteilt. Jede Kategorie erhält einen fixen Score."
+         "Beispiel: Mit Schwellen Performance ≥ 1000 Klicks Performance, Good ≥ 101, Fair ≥ 11, Weak ≥ 1; Opportunity 0 Klicks & ≥ 100 Impressions. "
+         "Perfomance (Score 1.0), Good (Score 0.75), Fair (Score 0.50), Weak (Score 0.25), Opportunity (Score 0.15), Dead (Score 0.0)"),
+        ("seo_eff", "URL-SEO-Effizienz",
+         "Anteil der Keywords einer URL mit durchschnittlicher Position ≤ 5. Je höher der Anteil, desto effizienter."),
+        ("main_kw_sv", "Potenzial Hauptkeyword der URL (gemessen am Suchvolumen)",
+         "Je höher das Suchvolumen des Hauptkeywords für die URL, desto besser."),
+        ("main_kw_exp", "Potenzial Hauptkeyword der URL (gemessen an Expected Clicks)",
+         "Je höher die erwarteten Klicks für das Keyword, desto besser."),
+        ("llm_ref", "LLM-Referral-Traffic",
+         "Wie viel Traffic/Klicks erhält eine URL aus LLMs?"),
+        ("overall_traffic", "Overall Traffic",
+         "Gesamter Traffic pro URL über alle Kanäle hinweg"),
+    ],
+    "Popularität & Autorität": [
+        ("ai_overview", "AI Overviews Popularität",
+         "Wie häufig wird die URL in Google AI Overviews als Quelle gezeigt?"),
+        ("ext_pop", "URL-Popularität extern",
+         "Wie viele Backlinks von wie vielen unterschiedlichen (Referring) Domains erhält die URL? Das Tool gewichtet folgendermaßen: 70% Ref. Domains + 30% Backlinks."),
+        ("int_pop", "URL-Popularität intern",
+         "Eindeutige interne Inlinks pro URL."),
+        ("llm_crawl", "LLM-Crawl-Frequenz",
+         "Wie häufig wird die URL von LLM-Bots gecrawlt? Klassische Bots (Googlebot, Bingbot, Yandex, Baidu) werden exkludiert."),
+        ("llm_citations", "LLM Citations",
+         "Wie häufig wird die URL in Antworten von LLMs als Quelle zitiert/verlinkt?"),
+    ],
+    "Wirtschaftlicher Impact": [
+        ("otv", "Organic Traffic Value",
+         "Geschätzter organischer Traffic-Wert der URL"),
+        ("revenue", "Umsatz",
+         "Generierter Umsatz pro URL"),
+    ],
+    "Qualität & Relevanz": [
+        ("offtopic", "Offtopic-Score",
+         "Semantische Nähe zum Themen-Centroid (Cosine-Similarity). Befindet sich die Cosinus Ähnlichkeit der URL zum Centroid unter dem Schwellenwert, erhält die URL den Score 0. Befindet sie sich über dem Threshold, erhält die URL den Wert 1. Hat eine URL keine Embeddings gelten diese als < τ."),
+    ],
+    "Strategische Steuerung": [
+        ("priority", "Strategische Priorität (Multiplikator)",
+         "Manueller Multiplikator pro URL, skaliert den finalen Score nur für diese URL. Standardmäßig hat jede URL die Prio 1. Wenn hier in der Input-Datei eine URL die Priorität 1,2 bekommt, bekommt sie +20% Verstärkung für den finalen Score."),
+    ],
+}
+
+
 # ============= Kriterienauswahl – Karten mit integriertem Toggle =============
 st.subheader("Kriterien auswählen")
 st.caption("Wähle unten die gewünschten Kriterien. Danach erscheinen die passenden Upload-Masken.")
