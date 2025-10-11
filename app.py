@@ -496,64 +496,70 @@ use_autodiscovery = st.sidebar.toggle(
     help="Wenn aktiv: Fehlen die vorgesehenen Dateien/Spalten, sucht das Tool automatisch in anderen Uploads nach passenden Spalten (per Alias)."
 )
 
-# ============= Kriterienauswahl (CLUSTERED) =============
+# ============= Kriterienauswahl – Karten mit Toggle (schön) =============
 st.subheader("Kriterien auswählen")
 st.caption("Wähle unten die gewünschten Kriterien. Danach erscheinen die passenden Upload-Masken.")
 
-CRITERIA_GROUPS = {
-    "Performance & Nachfrage": [
-        ("sc_clicks", "Search Console Klicks",
-         "Search Console Klicks – wie viele Klicks die URL geholt hat. Je mehr, desto besser."),
-        ("sc_impr", "Search Console Impressions",
-         "Search Console Impressions – wie viele Impressionen in der Google Suche die URL generiert hat. Je mehr, desto besser."),
-        ("sc_perf_class", "Search Console Performance-Klassifizierung (Kategorien)",
-         "Diskrete URL-Klassifizierung aus Search Console (Klicks + Impressions). Du definierst Klick-Schwellen (Performance/Good/Fair/Weak) und einen Impressions-Schwellenwert für 0-Klick-Keywords: Opportunity (0 Klicks & Impressions ≥ X) oder Dead (0 Klicks & Impressions < X). "
-         "Beispiel: Mit Schwellen Performance ≥ 1000 Klicks, Good ≥ 101, Fair ≥ 11, Weak ≥ 1; Opportunity ab 0 Klicks & ≥ 100 Impressions. "
-         "Eine URL mit 0 Klicks und 250 Impressions wird ‚Opportunity‘ (Score 0.15), eine URL mit 15 Klicks wird ‚Fair‘ (0.50), mit 120 Klicks ‚Good‘ (0.75) etc."),
-        ("seo_eff", "URL-SEO-Effizienz",
-         "Anteil der Keywords einer URL mit durchschnittlicher Position ≤ 5. Je höher der Anteil, desto effizienter."),
-        ("main_kw_sv", "Potenzial Hauptkeyword der URL (gemessen am Suchvolumen)",
-         "Je höher das Suchvolumen des Hauptkeywords für die URL, desto besser. Voraussetzung: Es kann eine Datei mit mind. URL, Hauptkeyword und Suchvolumen Hauptkeyword bereitgestellt werden."),
-        ("main_kw_exp", "Potenzial Hauptkeyword der URL (gemessen an Expected Clicks)",
-         "Entweder fertiger Wert **expected_clicks** ODER Berechnung aus (Suchvolumen × CTR(Position)). Je höher der Wert, desto besser. Voraussetzung: Es kann eine Datei mit mind. URL, Hauptkeyword und expected Klicks für das Hauptkeyword bereitgestellt werden ODER URL, Hauptkeyword und Ranking für Hauptkeyword."),
-        ("llm_ref", "LLM-Referral-Traffic",
-         "Erhält die URLs bereits Traffic aus LLMs? Je höher der Wert, desto besser."),
-        ("overall_traffic", "Overall Traffic (Sessions/Besuche/Klicks gesamt)",
-         "Gesamter Traffic pro URL (Sessions/Besuche/Klicks etc.). Aliases werden automatisch erkannt (z. B. sessions, visits, overall_clicks). Je mehr, desto besser."),
-    ],
-    "Popularität & Autorität": [
-        ("ai_overview", "AI Overviews Popularität",
-         "Wie häufig wird die URL momentan in Google AI Overviews als Quelle gezeigt? Je öfter, desto besser."),
-        ("ext_pop", "URL-Popularität extern",
-         "Wie viele Backlinks von wie vielen unterschiedlichen (Referring) Domains erhält die URL? Das Tool gewichtet folgendermaßen: 70% Ref. Domains + 30% Backlinks."),
-        ("int_pop", "URL-Popularität intern",
-         "Eindeutige interne Inlinks pro URL, wird entweder direkt `unique_inlinks` oder aus hochgeladener all inlinks Datei berechnet."),
-        ("llm_crawl", "LLM-Crawl-Frequenz",
-         "Wie häufig wird die URL von LLM-Bots gecrawlt? Klassische Bots (Googlebot, Bingbot, Yandex, Baidu) sind exkludiert."),
-        ("llm_citations", "LLM Citations",
-         "Wie häufig wird die URL in Antworten von LLMs als Quelle zitiert/verlinkt? Je häufiger, desto besser."),
-    ],
-    "Wirtschaftlicher Impact": [
-        ("otv", "Organic Traffic Value",
-         "Geschätzter organischer Traffic-Wert der URL (direkt vorhanden oder aus Keyword-Datei via CTR-Kurve)."),
-        ("revenue", "Umsatz",
-         "Tatsächlich erzielter Umsatz der URL."),
-    ],
-    "Qualität & Relevanz": [
-        ("offtopic", "Offtopic-Score",
-         "Semantische Nähe zum Themen-Centroid (Cosine-Similarity). Befindet sich die Cosinus Ähnlichkeit der URL zum Centroid unter dem Schwellenwert, erhält die URL den Score 0. Befindet sie sich über dem Threshold, erhält die URL den Wert 1. Hat eine URL keine Embeddings gelten diese als < τ."),
-    ],
-    "Strategische Steuerung": [
-        ("priority", "Strategische Priorität (Multiplikator)",
-         "Manueller Multiplikator pro URL, skaliert den finalen Score nur für diese URL. Standardmäßig hat jede URL die Prio 1. Wenn hier in der Input-Datei eine URL die Priorität 1,2 bekommt, bekommt sie +20% Verstärkung für den finalen Score. Eine URL mit einer Prio von 2 wird doppelt gewichtet usw. In die Input-Datei müssen nur die URLs eingetragen werden, die geboostet werden soll, inkl. Prioritätsfaktor."),
-    ],
+# CSS für Karten-Grid
+st.markdown("""
+<style>
+.module-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 12px;
+    margin: 10px 0 18px;
 }
+.module-card {
+    border: 1px solid #e5e7eb;
+    background: #f9fafb;
+    border-radius: 14px;
+    padding: 14px 16px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+    transition: all .2s ease;
+}
+.module-card:hover { background: #eef2ff; box-shadow: 0 6px 12px rgba(0,0,0,.08); }
+.module-title { font-weight: 600; color: #111827; font-size: 1.02rem; margin: 0 0 4px 0; }
+.module-desc { color: #4b5563; font-size: .92rem; line-height: 1.35; margin-bottom: 8px; }
+.module-row { display:flex; align-items:center; justify-content:space-between; gap:10px; }
+</style>
+""", unsafe_allow_html=True)
 
+# Wichtig: CRITERIA_GROUPS muss vorhanden sein (wie bisher definiert)
 active: Dict[str, bool] = {}
+
 for group, crits in CRITERIA_GROUPS.items():
     st.markdown(f"### {group}")
+    # Start Grid
+    st.markdown('<div class="module-grid">', unsafe_allow_html=True)
+
+    # Für jedes Kriterium eine Karte mit Toggle
     for code, label, helptext in crits:
-        active[code] = st.checkbox(label, value=False, help=helptext, key=f"chk_{code}")
+        # Toggle zuerst rendern (Widget), dann die Karte (HTML). Beides in einem Container halten:
+        # Wir nutzen eine kleine leere Spalte, damit Toggle und Karte optisch zusammengehören.
+        toggle_key = f"toggle_{code}"
+
+        # Toggle-Widget (klein, ohne Label – das Label steht als Titel in der Karte)
+        toggle_state = st.toggle(
+            label, key=toggle_key, value=False, help=helptext, label_visibility="collapsed"
+        )
+
+        # Karte rendern (Titel + Beschreibung)
+        st.markdown(f"""
+            <div class="module-card">
+                <div class="module-row">
+                    <div class="module-title">{label}</div>
+                    <div>{'✅' if toggle_state else '⬜️'}</div>
+                </div>
+                <div class="module-desc">{helptext}</div>
+            </div>
+        """, unsafe_allow_html=True)
+
+        # Status im bekannten Dict speichern (abwärtskompatibel zum restlichen Code)
+        active[code] = toggle_state
+
+    # Ende Grid
+    st.markdown('</div>', unsafe_allow_html=True)
+
 
 # ============= Upload-Masken (nach Auswahl) =============
 st.markdown("---")
