@@ -496,202 +496,44 @@ use_autodiscovery = st.sidebar.toggle(
     help="Wenn aktiv: Fehlen die vorgesehenen Dateien/Spalten, sucht das Tool automatisch in anderen Uploads nach passenden Spalten (per Alias)."
 )
 
-# ============= Kriterienauswahl – Karten mit Toggle (schön) =============
+# ============= Kriterienauswahl – Karten mit integriertem Toggle =============
 st.subheader("Kriterien auswählen")
 st.caption("Wähle unten die gewünschten Kriterien. Danach erscheinen die passenden Upload-Masken.")
 
-# CSS für Karten-Grid
-st.markdown("""
-<style>
-.module-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-    gap: 12px;
-    margin: 10px 0 18px;
-}
-.module-card {
-    border: 1px solid #e5e7eb;
-    background: #f9fafb;
-    border-radius: 14px;
-    padding: 14px 16px;
-    box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-    transition: all .2s ease;
-}
-.module-card:hover { background: #eef2ff; box-shadow: 0 6px 12px rgba(0,0,0,.08); }
-.module-title { font-weight: 600; color: #111827; font-size: 1.02rem; margin: 0 0 4px 0; }
-.module-desc { color: #4b5563; font-size: .92rem; line-height: 1.35; margin-bottom: 8px; }
-.module-row { display:flex; align-items:center; justify-content:space-between; gap:10px; }
-</style>
-""", unsafe_allow_html=True)
+# Layout: wie viele Karten pro Zeile
+cards_per_row = 3
 
-st.markdown("""
-<style>
-.info-wrap{display:flex;align-items:center;gap:8px}
-.info{position:relative;display:inline-block;cursor:help;font-size:14px;line-height:1}
-.info::after{content:"ℹ️";}
-.info .tip{
-  visibility:hidden;opacity:0;transition:all .12s ease;
-  position:absolute;z-index:50;right:0;top:130%;
-  width:320px;max-width:min(80vw,320px);
-  background:#111827;color:#fff;padding:10px 12px;border-radius:10px;
-  box-shadow:0 8px 24px rgba(0,0,0,.15);font-size:.86rem;line-height:1.35;
-}
-.info:hover .tip{visibility:visible;opacity:1;transform:translateY(-2px);}
-.info .tip b{color:#fff}
-.info .tip code{background:#1f2937;padding:0 .25em;border-radius:4px}
-</style>
-""", unsafe_allow_html=True)
-
-
-CRITERIA_GROUPS = {
-    "Performance & Nachfrage": [
-        ("sc_clicks", "Search Console Klicks",
-         "Wie viele Klicks eine URL generiert hat."),
-        ("sc_impr", "Search Console Impressions",
-         "Wie viele Imptessionen eine URL geholt hat"),
-        ("sc_perf_class", "Search Console Performance-Klassifizierung (nach Kategorien)",
-         "URLs werden anhand von Klick- und Impressions-Schwellen in die Kategorien Performance/Good/Fair/Weak/Opportunity/Dead eingeteilt. Jede Kategorie erhält einen fixen Score."
-         "Beispiel: Mit Schwellen Performance ≥ 1000 Klicks Performance, Good ≥ 101, Fair ≥ 11, Weak ≥ 1; Opportunity 0 Klicks & ≥ 100 Impressions. "
-         "Perfomance (Score 1.0), Good (Score 0.75), Fair (Score 0.50), Weak (Score 0.25), Opportunity (Score 0.15), Dead (Score 0.0)"),
-        ("seo_eff", "URL-SEO-Effizienz",
-         "Anteil der Keywords einer URL mit durchschnittlicher Position ≤ 5. Je höher der Anteil, desto effizienter."),
-        ("main_kw_sv", "Potenzial Hauptkeyword der URL (gemessen am Suchvolumen)",
-         "Je höher das Suchvolumen des Hauptkeywords für die URL, desto besser."),
-        ("main_kw_exp", "Potenzial Hauptkeyword der URL (gemessen an Expected Clicks)",
-         "Je höher die erwarteten Klicks für das Keyword, desto besser."),
-        ("llm_ref", "LLM-Referral-Traffic",
-         "Wie viel Traffic/Klicks erhält eine URL aus LLMs?"),
-        ("overall_traffic", "Overall Traffic",
-         "Gesamter Traffic pro URL über alle Kanäle hinweg"),
-    ],
-    "Popularität & Autorität": [
-        ("ai_overview", "AI Overviews Popularität",
-         "Wie häufig wird die URL in Google AI Overviews als Quelle gezeigt?"),
-        ("ext_pop", "URL-Popularität extern",
-         "Wie viele Backlinks von wie vielen unterschiedlichen (Referring) Domains erhält die URL? Das Tool gewichtet folgendermaßen: 70% Ref. Domains + 30% Backlinks."),
-        ("int_pop", "URL-Popularität intern",
-         "Eindeutige interne Inlinks pro URL."),
-        ("llm_crawl", "LLM-Crawl-Frequenz",
-         "Wie häufig wird die URL von LLM-Bots gecrawlt? Klassische Bots (Googlebot, Bingbot, Yandex, Baidu) werden exkludiert."),
-        ("llm_citations", "LLM Citations",
-         "Wie häufig wird die URL in Antworten von LLMs als Quelle zitiert/verlinkt?"),
-    ],
-    "Wirtschaftlicher Impact": [
-        ("otv", "Organic Traffic Value",
-         "Geschätzter organischer Traffic-Wert der URL"),
-        ("revenue", "Umsatz",
-         "Generierter Umsatz pro URL"),
-    ],
-    "Qualität & Relevanz": [
-        ("offtopic", "Offtopic-Score",
-         "Semantische Nähe zum Themen-Centroid (Cosine-Similarity). Befindet sich die Cosinus Ähnlichkeit der URL zum Centroid unter dem Schwellenwert, erhält die URL den Score 0. Befindet sie sich über dem Threshold, erhält die URL den Wert 1. Hat eine URL keine Embeddings gelten diese als < τ."),
-    ],
-    "Strategische Steuerung": [
-        ("priority", "Strategische Priorität (Multiplikator)",
-         "Manueller Multiplikator pro URL, skaliert den finalen Score nur für diese URL. Standardmäßig hat jede URL die Prio 1. Wenn hier in der Input-Datei eine URL die Priorität 1,2 bekommt, bekommt sie +20% Verstärkung für den finalen Score."),
-    ],
-}
-
-TOOLTIP_INFO = {
-    "sc_clicks": """<b>Benötigte Daten</b>: <code>URL</code>, <code>Clicks/Klicks</code> (Query-Ebene ok, wird pro URL summiert).<br>
-    <b>Berechnung</b>: Summe Klicks je URL → in Score transformiert nach globalem Modus (Rank/Perzentil).""",
-
-    "sc_impr": """<b>Benötigte Daten</b>: <code>URL</code>, <code>Impressions</code> (Query-Ebene ok).<br>
-    <b>Berechnung</b>: Summe Impressions je URL → Score nach globalem Modus.""",
-
-    "sc_perf_class": """<b>Benötigte Daten</b>: <code>URL</code>, <code>Clicks</code>, <code>Impressions</code> (Query-Ebene ok).<br>
-    <b>Berechnung</b>: Einteilung nach Schwellen (UI) in Performance/Good/Fair/Weak/Opportunity/Dead → fixe Scores: 1.00/0.75/0.50/0.25/0.15/0.00.""",
-
-    "seo_eff": """<b>Benötigte Daten</b>: <code>keyword/query</code>, <code>URL</code>, <code>position</code> (aus KW-Tool oder GSC).<br>
-    <b>Berechnung</b>: Anteil Position ≤5 pro URL, Bayes-Glättung mit <i>s₀</i>, optional Volumen-Gewicht → Score nach globalem Modus.""",
-
-    "main_kw_sv": """<b>Benötigte Daten</b>: <code>URL</code>, <code>main_keyword</code>, <code>search_volume</code>.<br>
-    <b>Berechnung</b>: Suchvolumen des Hauptkeywords pro URL → Score nach globalem Modus.""",
-
-    "main_kw_exp": """<b>Benötigte Daten</b> (eine der Varianten):<br>
-    • A: <code>URL</code>, <code>main_keyword</code>, <code>expected_clicks</code><br>
-    • B: <code>URL</code>, <code>main_keyword</code>, <code>position</code>, <code>search_volume</code> (+ optional <code>CTR-Kurve</code>)<br>
-    <b>Berechnung</b>: Expected Clicks je URL (direkt oder SV×CTR(pos)) → Score nach globalem Modus.""",
-
-    "llm_ref": """<b>Benötigte Daten</b>: <code>URL</code>, <code>LLM-Referrals/Traffic</code> (genau zwei Spalten).<br>
-    <b>Berechnung</b>: Wert je URL → Score nach globalem Modus.""",
-
-    "overall_traffic": """<b>Benötigte Daten</b>: <code>URL</code> + eine Gesamt-Traffic-Spalte (Aliases: sessions/visits/overall_clicks …).<br>
-    <b>Berechnung</b>: Wert je URL → Score nach globalem Modus.""",
-
-    "ai_overview": """<b>Benötigte Daten</b>: <code>keyword</code>, <code>url</code>, <code>current_url_inside</code> (1/0, true/false oder URL).<br>
-    <b>Berechnung</b>: Zeilen mit Treffer je URL zählen → Score nach globalem Modus.""",
-
-    "ext_pop": """<b>Benötigte Daten</b>: <code>URL</code>, <code>backlinks</code>, <code>ref_domains</code>.<br>
-    <b>Berechnung</b>: Score = 0.3·Score(BL) + 0.7·Score(RD) (beide nach globalem Modus).""",
-
-    "int_pop": """<b>Benötigte Daten</b>: Variante A: <code>URL</code>, <code>unique_inlinks</code> — oder<br>
-    Variante B (Kantenliste): <code>URL</code> (=Ziel) + <code>source/referrer</code>.<br>
-    <b>Berechnung</b>: Eindeutige Inlinks je URL → Score nach globalem Modus.""",
-
-    "llm_crawl": """<b>Benötigte Daten</b>: Aggregiert: <code>URL</code> + Bot-Spalten (GPTBot, ClaudeBot …) — oder<br>
-    Logfile: <code>URL</code>, <code>user_agent</code> (+ optional Menge). Klassische Bots werden exkludiert.<br>
-    <b>Berechnung</b>: Treffer/Frequenz je URL → Score nach globalem Modus.""",
-
-    "llm_citations": """<b>Benötigte Daten</b>: Aggregiert: <code>URL</code>, <code>llm_citations</code> — oder<br>
-    Pro Prompt: <code>keyword/prompt</code>, <code>URL</code> + LLM-Spalten (0/1/Anzahl) oder <code>cited_url</code>.<br>
-    <b>Berechnung</b>: Zitate je URL zählen → Score nach globalem Modus.""",
-
-    "otv": """<b>Benötigte Daten</b>: Variante A: <code>URL</code>, <code>traffic_value</code> oder <code>potential_traffic_url</code> (+ optional <code>cpc</code>) — oder<br>
-    Variante B: <code>keyword</code>, <code>URL</code>, <code>position</code>, <code>search_volume</code> (+ optional <code>cpc</code>, <code>CTR-Kurve</code>).<br>
-    <b>Berechnung</b>: (SV×CTR×CPC) je KW summiert pro URL (oder Value direkt) → Score nach globalem Modus.""",
-
-    "revenue": """<b>Benötigte Daten</b>: <code>URL</code>, <code>revenue</code>.<br>
-    <b>Berechnung</b>: Wert je URL → Score nach globalem Modus.""",
-
-    "offtopic": """<b>Benötigte Daten</b>: <code>URL</code>, <code>embedding</code> (Vektor als JSON/Sequenz).<br>
-    <b>Berechnung</b>: Cosine-Similarity zur Themen-Centroid; Score = 1, wenn ≥ τ (Slider), sonst 0.""",
-
-    "priority": """<b>Benötigte Daten</b>: <code>URL</code>, <code>priority_factor</code> (0.5–2.0).<br>
-    <b>Berechnung</b>: Multipliziert den <i>final_score</i> der URL (kein eigenes Kriteriumsscore).""",
-}
-
+def render_card(col, code: str, label: str, helptext: str) -> bool:
+    """Rendert eine Karte mit Titel, Info-Tooltip und Toggle (rechts)."""
+    with col.container(border=True):
+        r1c1, r1c2 = st.columns([1, 0.23])
+        with r1c1:
+            st.markdown(f"**{label}**")
+            # kleiner Infohinweis per Hover (nutzt Streamlit-Tooltip/Help)
+            st.caption("ℹ️ Details: Maus darüber halten.")
+        with r1c2:
+            # Toggle im Kartentitelbereich; help zeigt den vollständigen Text on-hover
+            state = st.toggle("Aktiv", key=f"toggle_{code}", value=False, help=helptext)
+        # kurze Beschreibung unter dem Header
+        st.markdown(f"<div style='color:#4b5563;font-size:0.92rem;line-height:1.35'>{helptext}</div>", unsafe_allow_html=True)
+    return state
 
 active: Dict[str, bool] = {}
 
 for group, crits in CRITERIA_GROUPS.items():
     st.markdown(f"### {group}")
-    # Start Grid
-    st.markdown('<div class="module-grid">', unsafe_allow_html=True)
+    # Karten im Grid mittels columns
+    rows = (len(crits) + cards_per_row - 1) // cards_per_row
+    idx = 0
+    for _ in range(rows):
+        cols = st.columns(cards_per_row)
+        for c in cols:
+            if idx >= len(crits):
+                break
+            code, label, helptext = crits[idx]
+            active[code] = render_card(c, code, label, helptext)
+            idx += 1
 
-    # Für jedes Kriterium eine Karte mit Toggle
-    for code, label, helptext in crits:
-        # Toggle zuerst rendern (Widget), dann die Karte (HTML). Beides in einem Container halten:
-        # Wir nutzen eine kleine leere Spalte, damit Toggle und Karte optisch zusammengehören.
-        toggle_key = f"toggle_{code}"
-
-        # Toggle-Widget (klein, ohne Label – das Label steht als Titel in der Karte)
-        toggle_state = st.toggle(
-            label, key=toggle_key, value=False, help=helptext, label_visibility="collapsed"
-        )
-
-        # Karte rendern (Titel + Beschreibung)
-        # NEU – mit Info-Icon & Tooltip
-        tooltip_html = TOOLTIP_INFO.get(code, "")
-        st.markdown(f"""
-            <div class="module-card">
-                <div class="module-row">
-                    <div class="module-title">{label}</div>
-                    <div class="info-wrap">
-                        <span class="info"><span class="tip">{tooltip_html}</span></span>
-                        <div>{'✅' if toggle_state else '⬜️'}</div>
-                    </div>
-                </div>
-                <div class="module-desc">{helptext}</div>
-            </div>
-        """, unsafe_allow_html=True)
-
-
-        # Status im bekannten Dict speichern (abwärtskompatibel zum restlichen Code)
-        active[code] = toggle_state
-
-    # Ende Grid
-    st.markdown('</div>', unsafe_allow_html=True)
 
 
 # ============= Upload-Masken (nach Auswahl) =============
