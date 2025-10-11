@@ -16,6 +16,20 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
+st.markdown("""
+<style>
+/* Hintergrund fix weiß erzwingen */
+html, body, [data-testid="stAppViewContainer"], [data-testid="stApp"], [data-testid="stToolbar"] {
+    background-color: #ffffff !important;
+    color: #000000 !important;
+}
+[data-testid="stHeader"] {
+    background: #ffffff !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
+
 # ============= Page & CSS =============
 st.set_page_config(page_title="ONE URL Scoreboard", layout="wide", initial_sidebar_state="expanded")
 st.markdown("""
