@@ -1305,6 +1305,19 @@ if active.get("revenue"):
 
 # SEO Efficiency
 if active.get("seo_eff"):
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("SEO-Effizienz – Optionen")
+    s0 = st.sidebar.slider(
+        "Glättungsstärke s₀ (Bayes-Prior)",
+        min_value=0, max_value=200, value=20, step=5,
+        help="Je höher s₀, desto stärker wird der Top-5-Anteil bei wenigen Rankings zum globalen Durchschnitt p₀ hingezogen."
+    )
+    vol_weight = st.sidebar.slider(
+        "Zusatzgewicht fürs Ranking-Volumen",
+        min_value=0.0, max_value=0.5, value=0.2, step=0.05,
+        help="Optional: Leichte Bevorzugung von URLs mit vielen Rankings. 0 = aus."
+    )
+
     found = find_df_with_targets(
         ["keyword","url","position"],
         prefer_keys=["eff_kw", "sc_eff", "sc", "sc_perf"],
@@ -1313,14 +1326,58 @@ if active.get("seo_eff"):
     if found and master_urls is not None:
         _, df_e, cm = found
         urlc, posc = cm["url"], cm["position"]
-        df_e = ensure_url_column(df_e, urlc)
-        grp = df_e.groupby(urlc)[posc].apply(lambda s: (to_numeric_smart(s) <= 5).sum() / max(1, s.shape[0]))
-        d = master_urls.merge(grp.rename("eff"), left_on="url_norm", right_index=True, how="left")
-        eff_series = d["eff"].fillna(0.0)
-        results["seo_eff"] = mode_score(eff_series).fillna(0.0)
-        debug_cols["seo_eff"] = {"eff_raw": eff_series}
+        df_e = ensure_url_column(df_e, urlc).copy()
+        pos_num = to_numeric_smart(df_e[posc])
+
+        # k = #Top-5 je URL, n = #Keywords je URL
+        grp_k = (pos_num <= 5).groupby(df_e[urlc]).sum().rename("_k_top5").astype(float)
+        grp_n = pos_num.groupby(df_e[urlc]).size().rename("_n_all").astype(float)
+
+        # globaler Durchschnitt p0
+        total_k = float(grp_k.sum())
+        total_n = float(grp_n.sum())
+        p0 = (total_k / total_n) if total_n > 0 else 0.0
+
+        # Bayes-Glättung: (k + p0*s0) / (n + s0)
+        post = ((grp_k + p0 * s0) / (grp_n + s0)).rename("_eff_bayes").astype(float)
+
+        # Join auf Master + Scores
+        tmp = pd.concat([grp_k, grp_n, post], axis=1)
+        d = master_urls.merge(tmp, left_on="url_norm", right_index=True, how="left")
+
+        eff_series = d["_eff_bayes"].fillna(0.0)
+
+        if vol_weight > 0:
+            n_score = mode_score(d["_n_all"].fillna(0.0))
+            eff_score = mode_score(eff_series)
+            # Mischung: (1 - vol_weight) * Effizienz + vol_weight * Volumen
+            mixed = (1.0 - vol_weight) * eff_score + vol_weight * n_score
+            results["seo_eff"] = mixed.fillna(0.0)
+        else:
+            results["seo_eff"] = mode_score(eff_series).fillna(0.0)
+
+        debug_cols["seo_eff"] = {
+            "k_top5": d["_k_top5"],
+            "n_all": d["_n_all"],
+            "p0_global": pd.Series([p0] * len(d)),
+            "eff_bayes": eff_series,
+            "seo_eff_score": results["seo_eff"],
+        }
+
+        with st.expander("Vorschau: SEO-Effizienz (Top 10)", expanded=False):
+            prev = pd.DataFrame({
+                "url": d["url_norm"],
+                "k_top5": d["_k_top5"],
+                "n_all": d["_n_all"],
+                "p0_global": p0,
+                "eff_bayes": eff_series,
+                "seo_eff_score": results["seo_eff"],
+            })
+            st.dataframe(prev.head(10), use_container_width=True)
+
     elif master_urls is not None:
         results["seo_eff"] = pd.Series(0.0, index=master_urls.index)
+
 
 # Priority override
 priority_url = None
