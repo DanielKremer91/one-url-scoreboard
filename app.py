@@ -545,27 +545,80 @@ CRITERIA_GROUPS = {
     ],
 }
 
-# ============= Kriterienauswahl – nur Switcher mit Tooltip =============
+# ---- Zusatz: Welche Daten pro Kriterium benötigt/akzeptiert werden (für Tooltips) ----
+CRITERIA_REQUIREMENTS = {
+    # Performance & Nachfrage
+    "sc_clicks": "Search Console — erwartet: URL (Alias: url/page/page_url/address), Clicks/Klicks. Query-Ebene ist ok – wird pro URL aggregiert.",
+    "sc_impr": "Search Console — erwartet: URL (Alias: url/page/page_url/address), Impressions/Impressionen. Query-Ebene ist ok – wird pro URL aggregiert.",
+    "sc_perf_class": "Search Console — erwartet: URL, Clicks/Klicks, Impressions/Impressionen. Query-Ebene ist ok – wird pro URL aggregiert. Zusätzlich in der UI: Klick-Schwellen + Impressions-Threshold für Opportunity.",
+    "seo_eff": "SEO-Effizienz — erwartet: keyword/query/suchanfrage, URL, position. (SC-Datei reicht; alternative Keyword-Datei möglich.)",
+    "main_kw_sv": "Hauptkeyword-Potenzial (SV) — erwartet: URL, main_keyword, search_volume.",
+    "main_kw_exp": "Hauptkeyword-Potenzial (Expected Clicks) — erwartet: URL, main_keyword sowie entweder expected_clicks ODER (search_volume + position + (optional) CTR-Kurve).",
+    "llm_ref": "LLM-Referrals — erwartet: genau 2 Spalten: URL, Sitzungen/Traffic.",
+    "overall_traffic": "Overall Traffic — erwartet: URL + eine Traffic-Spalte (Aliases: sessions/visits/overall_clicks/...).",
+
+    # Popularität & Autorität
+    "ai_overview": "AI Overviews — erwartet: keyword, url (aktuell rankende URL), current_url_inside (1/0, true/false, ja/nein ODER die URL selbst, wenn enthalten).",
+    "ext_pop": "Externe Popularität — erwartet: URL, backlinks, ref_domains.",
+    "int_pop": "Interne Popularität — erwartet: URL, unique_inlinks ODER Kantenliste: URL (=Ziel) + Quelle (z. B. source/referrer).",
+    "llm_crawl": "LLM-Crawl — Variante A (aggregiert): URL + je Bot eigene Spalte. Variante B (Logfile): URL, user_agent (+ optional sessions/visits/hits). Klassische Bots werden exkludiert.",
+    "llm_citations": "LLM Citations — akzeptierte Formate: (A) URL + llm_citations; (B) keyword/prompt, URL + je LLM eine 0/1/Anzahl/URL-Spalte; (C) keyword/prompt, URL, cited_url (==URL ⇒ 1), optional llm.",
+
+    # Wirtschaftlicher Impact
+    "otv": "Organic Traffic Value — Variante A: URL + traffic_value ODER potential_traffic_url (+ optional cpc). Variante B: keyword, URL, position, search_volume (+ optional cpc) und ggf. CTR-Kurve.",
+    "revenue": "Umsatz — erwartet: URL, revenue.",
+
+    # Qualität & Relevanz
+    "offtopic": "Embeddings — erwartet: URL, embedding (JSON-Liste oder Zahlen-Sequenz). Fehlende Embeddings ⇒ Outlier (< τ).",
+
+    # Strategische Steuerung
+    "priority": "Strategische Priorität — optional: URL, priority_factor (0.5–2.0).",
+}
+
+
+# ============= Kriterienauswahl – nur Switcher mit Tooltip; luftigere Gruppen =============
 st.subheader("Kriterien auswählen")
-st.caption("Wähle unten die gewünschten Kriterien. Der komplette Erklärungstext erscheint beim Hover über dem Schalter.")
+st.caption("Aktiviere die gewünschten Kriterien. Beim Hover über den Schalter siehst du Erklärung + benötigte Daten.")
 
 active: Dict[str, bool] = {}
-cards_per_row = 3  # Anzahl der Switcher pro Zeile
+switches_per_row = 3  # Anzahl Switcher pro Zeile
+
+# kleine CSS-Hilfe: Tooltip besser umbrechen (falls sehr lange Texte)
+st.markdown("""
+<style>
+/* Streamlit-Tooltip-Inhalt besser lesbar machen */
+[data-baseweb="tooltip"] div { white-space: pre-wrap; max-width: 520px; }
+/* etwas mehr Abstand unter H3-Gruppenüberschriften */
+.section-spacer { height: 16px; }
+.group-spacer   { height: 28px; }  /* Abstand zwischen Gruppen */
+</style>
+""", unsafe_allow_html=True)
 
 for group, crits in CRITERIA_GROUPS.items():
+    # Gruppenüberschrift + etwas Luft davor
+    st.markdown("<div class='group-spacer'></div>", unsafe_allow_html=True)
     st.markdown(f"### {group}")
-    rows = (len(crits) + cards_per_row - 1) // cards_per_row
+    st.markdown("<div class='section-spacer'></div>", unsafe_allow_html=True)
+
+    rows = (len(crits) + switches_per_row - 1) // switches_per_row
     idx = 0
     for _ in range(rows):
-        cols = st.columns(cards_per_row)
-        for c in cols:
-            if idx >= len(crits): 
+        cols = st.columns(switches_per_row)
+        for col in cols:
+            if idx >= len(crits):
                 break
             code, label, helptext = crits[idx]
-            with c:
-                active[code] = st.toggle(label, key=f"toggle_{code}", value=False, help=helptext)
+
+            # vollständiger Tooltip: Beschreibung + benötigte/optionale Daten
+            req = CRITERIA_REQUIREMENTS.get(code, "—")
+            tooltip = f"{helptext}\n\nBenötigte Daten:\n{req}"
+
+            with col:
+                active[code] = st.toggle(label, key=f"toggle_{code}", value=False, help=tooltip)
             idx += 1
 
+    # nach jeder Gruppe noch ein wenig Luft
+    st.markdown("<div class='group-spacer'></div>", unsafe_allow_html=True)
 
 
 # ============= Upload-Masken (nach Auswahl) =============
