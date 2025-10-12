@@ -1058,7 +1058,7 @@ if active.get("ai_overview"):
                     inside_col = c
                     break
 
-        # (2) Aufgeräumte, eindeutige Heuristik ohne doppelten, unerreichbaren Block
+        # Heuristik für die Kennzeichnung je Zeile
         def _to_indicator(row) -> int:
             if inside_col is None:
                 return 0
@@ -1079,7 +1079,7 @@ if active.get("ai_overview"):
                 if all(neg not in s for neg in {"not in","kein","nicht in","absent"}):
                     return 1
 
-            # 3) Feld enthält evtl. die URL selbst → normalize & vergleichen
+            # 3) Feld enthält evtl. die URL selbst → normalisieren & vergleichen
             cur = row.get(urlc, None) if hasattr(row, "get") else (row[urlc] if urlc in row.index else None)
             u1 = normalize_url(s) if s else None
             u2 = normalize_url(cur if cur else "")
@@ -1088,42 +1088,44 @@ if active.get("ai_overview"):
 
             return 0
 
+        # Option: AIO-Vorkommen mit Search-Volume gewichten
         use_sv_weight = st.session_state.get("aiov_weight_sv", False)
 
-if inside_col is None:
-    agg = df_aio[[urlc]].copy()
-    agg["_aiov_cnt"] = 0
-    agg = agg.groupby(urlc, as_index=False)["_aiov_cnt"].sum()
-else:
-    df_aio["_aiov_ind"] = df_aio.apply(_to_indicator, axis=1)
-    if use_sv_weight:
-        # Versuche search_volume zu finden; wenn nicht vorhanden, fallback auf ungewichtete Zählung
-        svc = find_first_alias(df_aio, "search_volume")
-        if svc:
-            sv = to_numeric_smart(df_aio[svc]).fillna(0)
-            df_aio["_aiov_w"] = df_aio["_aiov_ind"] * sv   # linear gewichtet
-            agg = (
-                df_aio.groupby(urlc, as_index=False)["_aiov_w"]
-                      .sum().rename(columns={"_aiov_w": "_aiov_cnt"})
-            )
+        if inside_col is None:
+            agg = df_aio[[urlc]].copy()
+            agg["_aiov_cnt"] = 0
+            agg = agg.groupby(urlc, as_index=False)["_aiov_cnt"].sum()
         else:
-            agg = (
-                df_aio.groupby(urlc, as_index=False)["_aiov_ind"]
-                      .sum().rename(columns={"_aiov_ind": "_aiov_cnt"})
-            )
-    else:
-        agg = (
-            df_aio.groupby(urlc, as_index=False)["_aiov_ind"]
-                  .sum().rename(columns={"_aiov_ind": "_aiov_cnt"})
-        )
-
+            df_aio["_aiov_ind"] = df_aio.apply(_to_indicator, axis=1)
+            if use_sv_weight:
+                # Versuche search_volume zu finden; wenn nicht vorhanden, fallback auf ungewichtete Zählung
+                svc = find_first_alias(df_aio, "search_volume")
+                if svc:
+                    sv = to_numeric_smart(df_aio[svc]).fillna(0)
+                    df_aio["_aiov_w"] = df_aio["_aiov_ind"] * sv   # linear gewichtet
+                    agg = (
+                        df_aio.groupby(urlc, as_index=False)["_aiov_w"]
+                              .sum().rename(columns={"_aiov_w": "_aiov_cnt"})
+                    )
+                else:
+                    agg = (
+                        df_aio.groupby(urlc, as_index=False)["_aiov_ind"]
+                              .sum().rename(columns={"_aiov_ind": "_aiov_cnt"})
+                    )
+            else:
+                agg = (
+                    df_aio.groupby(urlc, as_index=False)["_aiov_ind"]
+                          .sum().rename(columns={"_aiov_ind": "_aiov_cnt"})
+                )
 
         d = master_urls.merge(agg, left_on="url_norm", right_on=urlc, how="left")
         cnts = to_numeric_smart(d["_aiov_cnt"]).fillna(0)
         results["ai_overview"] = mode_score(cnts).fillna(0.0)
         debug_cols["ai_overview"] = {"ai_overview_count": cnts}
+
     elif master_urls is not None:
         results["ai_overview"] = pd.Series(0.0, index=master_urls.index)
+
 
 # OTV
 if active.get("otv"):
