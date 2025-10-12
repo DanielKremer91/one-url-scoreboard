@@ -637,6 +637,15 @@ if active.get("offtopic"):
     )
     st.session_state["offtopic_tau"] = tau
 
+# --- AI Overview: Volumen-Gewichtung (optional) ---
+if active.get("ai_overview"):
+    st.sidebar.checkbox(
+        "AI Overview nach Suchvolumen gewichten",
+        value=False,
+        key="aiov_weight_sv",
+        help="Wenn aktiv: jedes AIO-Vorkommen wird mit dem Search-Volume des Keywords gewichtet (Σ [_aiov_ind × search_volume] je URL)."
+    )
+
 # ============= Upload-Masken (nach Auswahl) =============
 st.markdown("---")
 st.subheader("Basierend auf den gewählten Kriterien benötigen wir folgende Dateien")
@@ -1079,13 +1088,35 @@ if active.get("ai_overview"):
 
             return 0
 
-        if inside_col is None:
-            agg = df_aio[[urlc]].copy()
-            agg["_aiov_cnt"] = 0
-            agg = agg.groupby(urlc, as_index=False)["_aiov_cnt"].sum()
+        use_sv_weight = st.session_state.get("aiov_weight_sv", False)
+
+if inside_col is None:
+    agg = df_aio[[urlc]].copy()
+    agg["_aiov_cnt"] = 0
+    agg = agg.groupby(urlc, as_index=False)["_aiov_cnt"].sum()
+else:
+    df_aio["_aiov_ind"] = df_aio.apply(_to_indicator, axis=1)
+    if use_sv_weight:
+        # Versuche search_volume zu finden; wenn nicht vorhanden, fallback auf ungewichtete Zählung
+        svc = find_first_alias(df_aio, "search_volume")
+        if svc:
+            sv = to_numeric_smart(df_aio[svc]).fillna(0)
+            df_aio["_aiov_w"] = df_aio["_aiov_ind"] * sv   # linear gewichtet
+            agg = (
+                df_aio.groupby(urlc, as_index=False)["_aiov_w"]
+                      .sum().rename(columns={"_aiov_w": "_aiov_cnt"})
+            )
         else:
-            df_aio["_aiov_ind"] = df_aio.apply(_to_indicator, axis=1)
-            agg = df_aio.groupby(urlc, as_index=False)["_aiov_ind"].sum().rename(columns={"_aiov_ind":"_aiov_cnt"})
+            agg = (
+                df_aio.groupby(urlc, as_index=False)["_aiov_ind"]
+                      .sum().rename(columns={"_aiov_ind": "_aiov_cnt"})
+            )
+    else:
+        agg = (
+            df_aio.groupby(urlc, as_index=False)["_aiov_ind"]
+                  .sum().rename(columns={"_aiov_ind": "_aiov_cnt"})
+        )
+
 
         d = master_urls.merge(agg, left_on="url_norm", right_on=urlc, how="left")
         cnts = to_numeric_smart(d["_aiov_cnt"]).fillna(0)
