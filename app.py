@@ -96,6 +96,7 @@ if "llm_bot_custom_exclude" not in st.session_state:
     st.session_state.llm_bot_custom_exclude = ""
 st.session_state.setdefault("llm_crawl_mode", None)
 st.session_state.setdefault("llm_bot_column_choices", [])
+st.session_state.setdefault("offtopic_tau", 0.5) 
 
 ALIASES = {
     "url": ["url","page","page_url","seite","address","adresse","target","ziel","ziel_url","landing_page","current_url"],
@@ -120,6 +121,8 @@ ALIASES = {
     "overall_traffic": ["overall_traffic","traffic","sessions","overall_sessions","sessions_total","besuche","gesamt_traffic","gesamt_sessions","visits","overall_clicks","clicks_total","klicks_gesamt"],
     "expected_clicks": ["expected_clicks","exp_clicks","expected_clicks_main","expected_clicks_kw","erwartete_klicks","erw_klicks"],
     "llm_citations": ["llm_citations","citations","llm_mentions","llm_refs","llm_links","citations_total"],
+    "discover_traffic": ["discover_traffic","discover_clicks","discover_sessions","discover","google_discover","gdiscover","discover_visits","discover_organic"],
+
 }
 
 TRACKING_PARAMS_PREFIXES = ["utm_", "icid_"]
@@ -517,6 +520,9 @@ CRITERIA_GROUPS = {
          "Wie viel Traffic/Klicks erhält eine URL aus LLMs?"),
         ("overall_traffic", "Overall Traffic",
          "Gesamter Traffic pro URL über alle Kanäle hinweg"),
+        ("discover", "Google Discover Traffic",
+         "Wie viel Discover-Klicks erhält die URL?"),
+
     ],
     "Popularität & Autorität": [
         ("ai_overview", "AI Overviews Popularität",
@@ -621,6 +627,15 @@ for group, crits in CRITERIA_GROUPS.items():
     # nach jeder Gruppe noch ein wenig Luft
     st.markdown("<div class='group-spacer'></div>", unsafe_allow_html=True)
 
+# --- Offtopic: Threshold-Slider immer sichtbar ---
+if active.get("offtopic"):
+    tau_default = st.session_state.get("offtopic_tau", 0.5)
+    tau = st.sidebar.slider(
+        "Offtopic-Threshold τ (Ähnlichkeit)",
+        0.0, 1.0, tau_default, 0.01,
+        help="URLs mit Cosine-Sim ≥ τ bekommen 1, sonst 0."
+    )
+    st.session_state["offtopic_tau"] = tau
 
 # ============= Upload-Masken (nach Auswahl) =============
 st.markdown("---")
@@ -661,6 +676,10 @@ if active.get("sc_perf_class"):
 if active.get("overall_traffic"):
     st.markdown("**Overall Traffic — erwartet:** `URL` + eine Traffic-Spalte (Aliases erkannt: sessions/visits/overall_clicks/…)")
     store_upload("overall", st.file_uploader("Overall Traffic Datei (CSV/XLSX)", type=["csv","xlsx"], key="upl_overall"))
+
+if active.get("discover"):
+    st.markdown("**Google Discover — erwartet:** `URL` + eine Discover-Traffic/Clicks/Sessions-Spalte.")
+    store_upload("discover", st.file_uploader("Google Discover Datei (CSV/XLSX)", type=["csv","xlsx"], key="upl_discover"))
 
 # AI Overviews Popularität
 if active.get("ai_overview"):
@@ -925,6 +944,19 @@ if active.get("overall_traffic"):
         debug_cols["overall_traffic"] = {"overall_traffic_raw": vals}
     elif master_urls is not None:
         results["overall_traffic"] = pd.Series(0.0, index=master_urls.index)
+
+# Google Discover Traffic
+if active.get("discover"):
+    found = find_df_with_targets(["url","discover_traffic"], prefer_keys=["discover"], use_autodiscovery=use_autodiscovery)
+    if found and master_urls is not None:
+        _, df_d, cm = found
+        d = join_on_master(df_d, cm["url"], [cm["discover_traffic"]])
+        vals = to_numeric_smart(d[cm["discover_traffic"]]).clip(lower=0)
+        results["discover"] = mode_score(vals).fillna(0.0)
+        debug_cols["discover"] = {"discover_traffic_raw": vals}
+    elif master_urls is not None:
+        results["discover"] = pd.Series(0.0, index=master_urls.index)
+
 
 # SC Performance-Klassifizierung (diskrete Kategorien → feste Scores)
 if active.get("sc_perf_class"):
@@ -1353,12 +1385,6 @@ if active.get("offtopic"):
     elif master_urls is not None:
         results["offtopic"] = pd.Series(0.0, index=master_urls.index)
 
-if active.get("offtopic") and "offtopic" in debug_cols and "similarity" in debug_cols["offtopic"]:
-    tau = st.sidebar.slider("Offtopic-Threshold τ (Ähnlichkeit)", 0.0, 1.0, 0.5, 0.01)
-    st.session_state["offtopic_tau"] = tau
-    sim = debug_cols["offtopic"]["similarity"]
-    results["offtopic"] = pd.Series((sim >= tau).astype(float))
-
 # Revenue
 if active.get("revenue"):
     found = find_df_with_targets(["url","revenue"], prefer_keys=["rev"], use_autodiscovery=use_autodiscovery)
@@ -1518,6 +1544,7 @@ weight_keys = [k for k in [
     "ext_pop","int_pop","llm_ref","llm_crawl",
     "otv","revenue","offtopic",
     "overall_traffic",
+    "discover",                 
     "llm_citations",
 ] if active.get(k)]
 
