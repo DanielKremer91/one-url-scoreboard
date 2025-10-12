@@ -590,16 +590,21 @@ st.caption("Aktiviere die gewünschten Kriterien. Beim Hover über den Schalter 
 active: Dict[str, bool] = {}
 switches_per_row = 3  # Anzahl Switcher pro Zeile
 
-# kleine CSS-Hilfe: Tooltip besser umbrechen (falls sehr lange Texte)
 st.markdown("""
 <style>
-/* Streamlit-Tooltip-Inhalt besser lesbar machen */
+/* Tooltip lesbarer */
 [data-baseweb="tooltip"] div { white-space: pre-wrap; max-width: 520px; }
-/* etwas mehr Abstand unter H3-Gruppenüberschriften */
-.section-spacer { height: 16px; }
-.group-spacer   { height: 28px; }  /* Abstand zwischen Gruppen */
+
+/* Innerhalb einer Dachkategorie: enger zusammen */
+.section-spacer { height: 6px; }             /* vorher 16px */
+label[data-testid="stWidgetLabel"]{ margin-bottom: .1rem; }
+div[data-testid="stHorizontalBlock"] > div { padding-bottom: .25rem; }
+
+/* Zwischen den Dachkategorien: mehr Luft */
+.group-spacer   { height: 48px; }            /* vorher 28px */
 </style>
 """, unsafe_allow_html=True)
+
 
 for group, crits in CRITERIA_GROUPS.items():
     # Gruppenüberschrift + etwas Luft davor
