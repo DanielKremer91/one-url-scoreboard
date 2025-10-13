@@ -542,11 +542,11 @@ CRITERIA_GROUPS = {
         ("revenue", "Umsatz",
          "Generierter Umsatz pro URL"),
     ],
-    "Qualität & Relevanz": [
+    "Inhaltliche Passgenauigkeit": [
         ("offtopic", "Offtopic-Score",
          "Semantische Nähe zum Themen-Centroid (Cosine-Similarity). Befindet sich die Cosinus Ähnlichkeit der URL zum Centroid unter dem Schwellenwert, erhält die URL den Score 0. Befindet sie sich über dem Threshold, erhält die URL den Wert 1. Hat eine URL keine Embeddings gelten diese als < τ."),
     ],
-    "Strategische Steuerung": [
+    "Strategische Wichtigkeit": [
         ("priority", "Strategische Priorität (Multiplikator)",
          "Manueller Multiplikator pro URL, skaliert den finalen Score nur für diese URL. Standardmäßig hat jede URL die Prio 1. Wenn hier in der Input-Datei eine URL die Priorität 1,2 bekommt, bekommt sie +20% Verstärkung für den finalen Score."),
     ],
@@ -575,10 +575,10 @@ CRITERIA_REQUIREMENTS = {
     "otv": "Organic Traffic Value — Variante A: URL + traffic_value ODER potential_traffic_url (+ optional cpc). Variante B: keyword, URL, position, search_volume (+ optional cpc) und ggf. CTR-Kurve.",
     "revenue": "Umsatz — erwartet: URL, revenue.",
 
-    # Qualität & Relevanz
+    # Inhaltliche Passgenauigkeit
     "offtopic": "Embeddings — erwartet: URL, embedding (JSON-Liste oder Zahlen-Sequenz). Fehlende Embeddings ⇒ Outlier (< τ).",
 
-    # Strategische Steuerung
+    # Strategische Wichtigkeit
     "priority": "Strategische Priorität — optional: URL, priority_factor (0.5–2.0).",
 }
 
