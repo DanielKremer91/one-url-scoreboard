@@ -27,10 +27,12 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ============= Branding =============
-try:
-    st.image("https://onebeyondsearch.com/img/ONE_beyond_search%C3%94%C3%87%C3%B4gradient%20%282%29.png", width=250)
-except Exception:
-    pass
+st.markdown("""
+<div style="display: flex; align-items: center; gap: 20px;">
+  <img src="https://onebeyondsearch.com/img/ONE_beyond_search%C3%94%C3%87%C3%B4gradient%20%282%29.png" alt="ONE Beyond Search" style="height: 60px;">
+  <img src="https://www.seo-trainee.de/wp-content/uploads/2025/07/seokomm.png" alt="SEOKomm" style="height: 60px;">
+</div>
+""", unsafe_allow_html=True)
 
 st.title("ONE URL Scoreboard")
 st.markdown("""
