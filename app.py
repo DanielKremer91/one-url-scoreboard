@@ -541,7 +541,7 @@ CRITERIA_GROUPS = {
          "Wie häufig wird die URL in Antworten von LLMs als Quelle zitiert/verlinkt?"),
     ],
 
-    "Engagement & Experience": [
+    "User Engagement & Experience": [
         ("ga4_engaged", "GA4 Engaged Sessions (Landingpage)",
          "Engaged Sessions auf Landingpage-Basis. Eindeutige Attribution je Sitzung.")
 
