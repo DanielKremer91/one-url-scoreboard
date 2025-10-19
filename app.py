@@ -124,8 +124,8 @@ ALIASES = {
     "expected_clicks": ["expected_clicks","exp_clicks","expected_clicks_main","expected_clicks_kw","erwartete_klicks","erw_klicks"],
     "llm_citations": ["llm_citations","citations","llm_mentions","llm_refs","llm_links","citations_total"],
     "discover_traffic": ["discover_traffic","discover_clicks","discover_sessions","discover","google_discover","gdiscover","discover_visits","discover_organic"],
-    "engaged_sessions": ["engaged_sessions","engaged","eng_sess","engaged_sessions_total"],
-    "landing_page": ["landing_page","landingpage","landing_page_plus_query","landing_page_query","landingpage_query","entry_page","entry_page_full"],
+    "engaged_sessions": ["engaged_sessions","engaged","eng_sess","engaged_sessions_total","interagierende sitzungen"],
+    "landing_page": ["landing_page","landingpage","landing_page_plus_query","landing_page_query","landingpage_query","entry_page","entry_page_full","zielseite + suchparameter","zielseite"],
 
 }
 
