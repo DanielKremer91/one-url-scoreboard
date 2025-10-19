@@ -124,6 +124,8 @@ ALIASES = {
     "expected_clicks": ["expected_clicks","exp_clicks","expected_clicks_main","expected_clicks_kw","erwartete_klicks","erw_klicks"],
     "llm_citations": ["llm_citations","citations","llm_mentions","llm_refs","llm_links","citations_total"],
     "discover_traffic": ["discover_traffic","discover_clicks","discover_sessions","discover","google_discover","gdiscover","discover_visits","discover_organic"],
+    "engaged_sessions": ["engaged_sessions","engaged","eng_sess","engaged_sessions_total"],
+    "landing_page": ["landing_page","landingpage","landing_page_plus_query","landing_page_query","landingpage_query","entry_page","entry_page_full"],
 
 }
 
@@ -538,6 +540,12 @@ CRITERIA_GROUPS = {
         ("llm_citations", "LLM Citations",
          "Wie häufig wird die URL in Antworten von LLMs als Quelle zitiert/verlinkt?"),
     ],
+
+    "Engagement & Experience": [
+        ("ga4_engaged", "GA4 Engaged Sessions (Landingpage)",
+         "Engaged Sessions auf Landingpage-Basis. Eindeutige Attribution je Sitzung.")
+
+    ],  
     "Wirtschaftlicher Impact": [
         ("otv", "Organic Traffic Value",
          "Geschätzter organischer Traffic-Wert der URL"),
@@ -573,6 +581,9 @@ CRITERIA_REQUIREMENTS = {
     "llm_crawl": "LLM-Crawl — Variante A (aggregiert): URL + je Bot eigene Spalte. Variante B (Logfile): URL, user_agent (+ optional sessions/visits/hits). Klassische Bots werden exkludiert.",
     "llm_citations": "LLM Citations — akzeptierte Formate: (A) URL + llm_citations; (B) keyword/prompt, URL + je LLM eine 0/1/Anzahl/URL-Spalte; (C) keyword/prompt, URL, cited_url (==URL ⇒ 1), optional llm.",
 
+    # User Enagagement & Experience
+    "ga4_engaged": "GA4 — erwartet: Landing page (+ Query) und engaged_sessions. Akzeptiert absolute URLs oder Pfade (z. B. /pfad?x=y). Bei Pfaden wird pfadgenau auf die Master-URL gemappt.",
+  
     # Wirtschaftlicher Impact
     "otv": "Organic Traffic Value — Variante A: URL + traffic_value ODER potential_traffic_url (+ optional cpc). Variante B: keyword, URL, position, search_volume (+ optional cpc) und ggf. CTR-Kurve.",
     "revenue": "Umsatz — erwartet: URL, revenue.",
@@ -688,6 +699,12 @@ if active.get("sc_perf_class"):
     st.markdown("**Search Console Performance-Datei — erwartet:** `keyword/query/suchanfrage`, `URL`, `Clicks/Klicks`, `Impressions/Impressionen` (Query-Ebene möglich; wird pro URL aggregiert).")
     store_upload("sc_perf", st.file_uploader("SC Performance Datei (CSV/XLSX) – optional, sonst wird die normale SC-Datei verwendet", type=["csv","xlsx"], key="upl_sc_perf"))
     st.caption("Wenn hier **keine Datei** hochgeladen wird, verwendet das Tool automatisch die oben hochgeladene **Search Console Datei**.")
+
+# GA4 Engaged Sessions Upload
+if active.get("ga4_engaged"):
+    st.markdown("**GA4 Engaged Sessions (Landingpage) — erwartet:** `Landing page (+ query)` und `engaged_sessions`.")
+    st.caption("Tipp: In GA4 die Dimension *Landing page + query string* exportieren. Absolute URLs oder Pfade werden unterstützt.")
+    store_upload("ga4_eng", st.file_uploader("GA4 Engaged Sessions Datei (CSV/XLSX)", type=["csv","xlsx"], key="upl_ga4_eng"))
 
 if active.get("overall_traffic"):
     st.markdown("**Overall Traffic — erwartet:** `URL` + eine Traffic-Spalte (Aliases erkannt: sessions/visits/overall_clicks/…)")
@@ -1359,6 +1376,63 @@ if active.get("llm_citations"):
             results["llm_citations"] = mode_score(citations_series).fillna(0.0)
             debug_cols["llm_citations"] = {"llm_citations_raw": citations_series}
 
+# GA4 Engaged Sessions (Landingpage)
+if active.get("ga4_engaged"):
+    found_lp = find_df_with_targets(["landing_page","engaged_sessions"], prefer_keys=["ga4_eng"], use_autodiscovery=use_autodiscovery)
+    if found_lp and master_urls is not None:
+        _, df_lp, cm = found_lp
+        lp_col, es_col = cm["landing_page"], cm["engaged_sessions"]
+        df_lp = df_lp[[lp_col, es_col]].copy()
+
+        s_lp = df_lp[lp_col].astype(str).fillna("")
+        looks_like_abs = s_lp.str.contains(r"^[a-zA-Z][a-zA-Z0-9+\-.]*://", regex=True).mean() >= 0.5
+
+        def to_path(s: str) -> Optional[str]:
+            if not isinstance(s, str) or not s.strip(): return None
+            s2 = s.strip()
+            if re.match(r"^[a-zA-Z][a-zA-Z0-9+\-.]*://", s2):
+                u = normalize_url(s2)
+                if not u: return None
+                from urllib.parse import urlsplit
+                sp = urlsplit(u)
+                p, q = (sp.path or "/"), sp.query
+                return f"{p}?{q}" if q else p
+            if not s2.startswith("/"):
+                s2 = "/" + s2
+            return s2
+
+        if looks_like_abs:
+            df_lp["_url_norm"] = s_lp.map(normalize_url)
+            df_lp[es_col] = to_numeric_smart(df_lp[es_col]).fillna(0)
+            agg = (
+                df_lp.dropna(subset=["_url_norm"])
+                     .groupby("_url_norm", as_index=False)[es_col]
+                     .sum().rename(columns={"_url_norm": "url_norm"})
+            )
+            d = master_urls.merge(agg, on="url_norm", how="left")
+            vals = to_numeric_smart(d[es_col]).fillna(0)
+        else:
+            def master_to_path(u: str) -> str:
+                from urllib.parse import urlsplit
+                sp = urlsplit(u or "")
+                p = sp.path or "/"
+                return f"{p}?{sp.query}" if sp.query else p
+
+            master_with_path = master_urls.copy()
+            master_with_path["_path"] = master_with_path["url_norm"].map(master_to_path)
+
+            df_lp["_path"] = s_lp.map(to_path)
+            df_lp[es_col] = to_numeric_smart(df_lp[es_col]).fillna(0)
+            agg = df_lp.dropna(subset=["_path"]).groupby("_path", as_index=False)[es_col].sum()
+            d = master_with_path.merge(agg, on="_path", how="left")
+            vals = to_numeric_smart(d[es_col]).fillna(0)
+
+        results["ga4_engaged"] = mode_score(vals).fillna(0.0)
+        debug_cols["ga4_engaged"] = {"engaged_sessions_raw": vals}
+    elif master_urls is not None:
+        results["ga4_engaged"] = pd.Series(0.0, index=master_urls.index)
+
+
 # Offtopic
 if active.get("offtopic"):
     found = find_df_with_targets(["url","embedding"], prefer_keys=["emb"], use_autodiscovery=use_autodiscovery)
@@ -1583,6 +1657,7 @@ weight_keys = [k for k in [
     "ai_overview",
     "ext_pop","int_pop","llm_ref","llm_crawl",
     "otv","revenue","offtopic",
+    "ga4_engaged",
     "overall_traffic",
     "discover",                 
     "llm_citations",
